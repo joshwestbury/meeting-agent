@@ -4,9 +4,9 @@ This document is the execution playbook for implementing everything in `project-
 It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
-- Completed: Steps 1, 2, 4, 5
+- Completed: Steps 1, 2, 4, 5, 6, 7
 - In Progress: Steps 3, 8, 16
-- Not Started: Steps 6, 7, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19
+- Not Started: Steps 9, 10, 11, 12, 13, 14, 15, 17, 18, 19
 
 Status legend:
 - `Completed`: implemented and covered by passing tests
@@ -135,7 +135,7 @@ Status notes:
    - success path
    - each failure category
 
-## 6) Staging and Transcript Normalization (`Not Started`)
+## 6) Staging and Transcript Normalization (`Completed`)
 
 1. Implement staging layout creation:
 
@@ -158,7 +158,7 @@ Status notes:
 5. Optional cache write:
    - save raw retrieval payload to `retrieval-cache/` when debug enabled
 
-## 7) State Management and Idempotency (`Not Started`)
+## 7) State Management and Idempotency (`Completed`)
 
 1. State location:
    - `~/.config/meeting-agent/state.json`

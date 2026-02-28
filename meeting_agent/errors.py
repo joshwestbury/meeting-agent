@@ -21,3 +21,7 @@ class LinkValidationError(MeetingAgentError):
 
 class FolderValidationError(MeetingAgentError):
     """Raised when a destination folder is invalid or unsafe."""
+
+
+class StateError(MeetingAgentError):
+    """Raised when state persistence or locking fails."""
