@@ -4,7 +4,7 @@
 
 This project builds a local-first CLI workflow that accepts a Granola meeting link, retrieves the transcript, generates a structured Markdown note, and writes it to your Obsidian vault.
 
-**Assumptions:** macOS, Python 3.12+, `uv`, Granola account access, authenticated retrieval method available.
+**Assumptions:** macOS, Python 3.12+, `uv`, Granola account access, authenticated retrieval method available, local LLM runtime available for on-device summarization.
 
 ---
 
@@ -65,12 +65,34 @@ Persist in `~/.config/meeting-agent/config.toml`:
 - `default_folder` (optional vault-relative folder)
 - `timezone` (IANA name or `local`)
 - `auth_mode` (`token`, `cookie`, or `manual_export`)
+- `llm_mode` (`local`, `none`; default `local`)
+- `llm_runtime` (`llama.cpp`; v1)
+- `llm_model` (default `LiquidAI/LFM2-2.6B-Transcript-GGUF`)
+- `llm_model_variant` (default `Q4_K_M`)
+- `llm_server_url` (default `http://127.0.0.1:8080`)
+- `model_cache_dir` (default `~/.cache/meeting-agent/models`)
 
 Startup validation must fail fast if:
 - `vault_root` does not exist
 - `vault_root` is not writable
 - `staging_root` cannot be created/written
 - auth config is missing for selected retrieval mode
+- `llm_mode = local` and runtime/model config is missing
+
+### 0.4 Local model policy (resolved for v1)
+
+Default model (recommended for v1):
+- `LiquidAI/LFM2-2.6B-Transcript-GGUF` (transcript-focused, lower resource usage)
+- Typical disk footprint: approximately `1.5 GB` to `2.7 GB` depending quantization.
+
+Optional larger model (documented expansion path):
+- `LiquidAI/LFM2-24B-A2B-GGUF`
+- Typical disk footprint: approximately `13.5 GB` (`Q4_0`) up to `25.4 GB` (`Q8_0`), higher for less-quantized variants.
+
+Model selection policy:
+1. v1 default is the smaller transcript model.
+2. User may opt into the larger model in config for higher-capacity reasoning/automation.
+3. If selected model is not present locally, CLI must provide actionable guidance or run model pull command.
 
 ---
 
@@ -301,6 +323,24 @@ Expected fields:
 - Max note length enforced.
 - Collisions handled by policy in 2.3.
 
+### 5.4 Local model runtime and download
+
+v1 runs LLM inference locally (no paid API required by default).
+
+Required commands:
+1. `meeting-agent models pull`:
+   - Downloads configured model into `model_cache_dir`.
+   - Supports `--model` override (for example 24B option).
+2. `meeting-agent models doctor`:
+   - Verifies local runtime availability and model presence.
+   - Verifies local server reachable at `llm_server_url`.
+3. `meeting-agent models list`:
+   - Shows installed models and active default.
+
+Runtime behavior:
+1. If `llm_mode = none`, skip model checks and use deterministic `--no-llm` path.
+2. If `llm_mode = local` and model/runtime is missing, fail fast with remediation steps.
+
 ---
 
 ## Phase 6: Routing Logic
@@ -433,6 +473,8 @@ v1 is done when:
 9. State writes are atomic and protected by a lock.
 10. `--no-llm` path works end-to-end.
 11. Resolved output path is always inside `vault_root`.
+12. `meeting-agent models doctor` reports actionable status for runtime/model readiness.
+13. Default local model uses `LiquidAI/LFM2-2.6B-Transcript-GGUF`, and user can opt into `LiquidAI/LFM2-24B-A2B-GGUF`.
 
 ---
 

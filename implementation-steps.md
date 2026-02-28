@@ -4,8 +4,8 @@ This document is the execution playbook for implementing everything in `project-
 It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
-- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9
-- In Progress: Steps 3, 16
+- Completed: Steps 1, 2, 4, 5, 6, 7, 8
+- In Progress: Steps 3, 9, 16
 - Not Started: Steps 10, 11, 12, 13, 14, 15, 17, 18, 19
 
 Status legend:
@@ -75,6 +75,17 @@ tests/
    - auth requirements present for selected `auth_mode`
 5. Persist config atomically (`config.toml.tmp` then rename).
 6. Add startup validator used by all commands.
+
+Model-config extension (new, pending):
+1. Add config keys:
+   - `llm_mode` (`local`, `none`)
+   - `llm_runtime` (`llama.cpp`)
+   - `llm_model` (default `LiquidAI/LFM2-2.6B-Transcript-GGUF`)
+   - `llm_model_variant` (default `Q4_K_M`)
+   - `llm_server_url` (default `http://127.0.0.1:8080`)
+   - `model_cache_dir` (default `~/.cache/meeting-agent/models`)
+2. Extend startup validator:
+   - if `llm_mode = local`, verify runtime/model settings are present.
 
 ## 3) Error Taxonomy and Exit Codes (`In Progress`)
 
@@ -200,7 +211,12 @@ Status notes:
    - `../` traversal attempt
    - symlink escape attempt
 
-## 9) LLM Output Contract and Validation (`Completed`)
+## 9) LLM Output Contract and Validation (`In Progress`)
+
+Status notes:
+- Implemented: payload schema validation, folder-candidate enforcement, max-length guard
+- Implemented: deterministic `--no-llm` payload and sensitive pre-check
+- Pending: local runtime adapter integration (`llama.cpp` server client)
 
 1. Implement `note_schema.py` with Pydantic model:
    - fields from project plan section 5.2
@@ -216,6 +232,28 @@ Status notes:
 5. Sensitive pre-check:
    - keyword/pattern scan before LLM
    - if sensitive, bypass LLM and mark `needs_review: true`
+6. Add local runtime adapter:
+   - call local `llama.cpp` server at configured `llm_server_url`
+   - parse model JSON output and pass through schema validators
+
+## 9.1) Local Model Runtime and Downloads (`Not Started`)
+
+1. Implement `meeting-agent models pull`:
+   - default model: `LiquidAI/LFM2-2.6B-Transcript-GGUF` + configured quant variant
+   - optional override model: `LiquidAI/LFM2-24B-A2B-GGUF`
+2. Implement `meeting-agent models doctor`:
+   - validate runtime installed
+   - validate configured model downloaded in `model_cache_dir`
+   - validate local server reachable
+3. Implement `meeting-agent models list`:
+   - show installed models and active configured model
+4. Add model-size guidance to command output:
+   - small transcript model: approximately `1.5-2.7 GB`
+   - 24B option: approximately `13.5-25.4 GB` (variant dependent)
+5. Add tests for:
+   - missing runtime/model actionable errors
+   - pull command happy path (mocked)
+   - doctor command status reporting
 
 ## 10) Note Rendering and Frontmatter (`Not Started`)
 
@@ -308,6 +346,10 @@ Status notes:
    - `--no-llm`
    - `--force-sensitive`
 4. Ensure identical core pipeline for interactive and non-interactive paths.
+5. Add model management commands:
+   - `meeting-agent models pull`
+   - `meeting-agent models doctor`
+   - `meeting-agent models list`
 
 ## 15) Batch Mode (`process --new`) (`Not Started`)
 

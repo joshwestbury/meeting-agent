@@ -20,6 +20,10 @@ def test_detect_sensitive_supports_extra_patterns() -> None:
     assert detect_sensitive("contains SECRET_TOKEN", extra_patterns=[r"secret_token"]) is True
 
 
+def test_detect_sensitive_false_on_clean_text() -> None:
+    assert detect_sensitive("project updates and timeline review") is False
+
+
 def test_detect_sensitive_ignores_invalid_extra_pattern() -> None:
     assert detect_sensitive("clean transcript", extra_patterns=["[invalid"]) is False
 
@@ -106,3 +110,23 @@ def test_generate_note_payload_with_llm_rejects_empty_candidates() -> None:
 
     with pytest.raises(SchemaValidationError):
         generate_note_payload_with_llm("text", [], _mock_llm)
+
+
+def test_generate_note_payload_with_llm_enforces_max_total_chars() -> None:
+    def _mock_llm(_: str, __: list[str]):
+        return {
+            "title": "Sync",
+            "meeting_date": "2026-02-28",
+            "attendees": [],
+            "client": "",
+            "project": "",
+            "tags": ["meeting"],
+            "folder_choice": "Inbox/Meetings/",
+            "summary": "x" * 200,
+            "action_items": [],
+            "key_details": [],
+            "sensitive": False,
+        }
+
+    with pytest.raises(SchemaValidationError):
+        generate_note_payload_with_llm("text", ["Inbox/Meetings/"], _mock_llm, max_total_chars=100)

@@ -66,6 +66,25 @@ def test_parse_llm_note_payload_rejects_invalid_json_string() -> None:
         parse_llm_note_payload(invalid)
 
 
+def test_parse_llm_note_payload_rejects_unknown_fields() -> None:
+    payload = {
+        "title": "Weekly Sync",
+        "meeting_date": "2026-02-28",
+        "attendees": [],
+        "client": "",
+        "project": "",
+        "tags": ["meeting"],
+        "folder_choice": "Inbox/Meetings/",
+        "summary": "Summary",
+        "action_items": [],
+        "key_details": [],
+        "sensitive": False,
+        "unexpected": "nope",
+    }
+    with pytest.raises(SchemaValidationError):
+        parse_llm_note_payload(payload)
+
+
 def test_ensure_folder_choice_candidate_rejects_non_candidate() -> None:
     note = parse_llm_note_payload(
         {
@@ -123,3 +142,21 @@ def test_validate_note_length_accepts_under_limit() -> None:
         }
     )
     validate_note_length(note, max_total_chars=100)
+
+
+def test_parse_llm_note_payload_rejects_bad_date_format() -> None:
+    payload = {
+        "title": "Weekly Sync",
+        "meeting_date": "02-28-2026",
+        "attendees": [],
+        "client": "",
+        "project": "",
+        "tags": ["meeting"],
+        "folder_choice": "Inbox/Meetings/",
+        "summary": "Summary",
+        "action_items": [],
+        "key_details": [],
+        "sensitive": False,
+    }
+    with pytest.raises(SchemaValidationError):
+        parse_llm_note_payload(payload)
