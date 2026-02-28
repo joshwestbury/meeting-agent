@@ -25,3 +25,7 @@ class FolderValidationError(MeetingAgentError):
 
 class StateError(MeetingAgentError):
     """Raised when state persistence or locking fails."""
+
+
+class SchemaValidationError(MeetingAgentError):
+    """Raised when note schema payloads are invalid."""

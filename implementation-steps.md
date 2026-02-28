@@ -4,9 +4,9 @@ This document is the execution playbook for implementing everything in `project-
 It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
-- Completed: Steps 1, 2, 4, 5, 6, 7
-- In Progress: Steps 3, 8, 16
-- Not Started: Steps 9, 10, 11, 12, 13, 14, 15, 17, 18, 19
+- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9
+- In Progress: Steps 3, 16
+- Not Started: Steps 10, 11, 12, 13, 14, 15, 17, 18, 19
 
 Status legend:
 - `Completed`: implemented and covered by passing tests
@@ -80,8 +80,9 @@ tests/
 
 Status notes:
 - Implemented: `ConfigError`, `LinkValidationError`, `RetrievalError`, `FolderValidationError`
+- Implemented: `SchemaValidationError`
 - Implemented: retrieval error codes (`AUTH_REQUIRED`, `NOT_FOUND`, `RATE_LIMITED`, `NETWORK_ERROR`, `PARSE_ERROR`)
-- Pending: `SchemaValidationError`, `CollisionError`
+- Pending: `CollisionError`
 - Pending: centralized CLI exit-code mapping and consistent error renderer
 
 1. Define typed errors in `errors.py`:
@@ -179,12 +180,12 @@ Status notes:
    - else collision path
 6. Add unit tests for concurrent lock behavior and atomic safety.
 
-## 8) Folder Validation and Path Safety (`In Progress`)
+## 8) Folder Validation and Path Safety (`Completed`)
 
 Status notes:
 - Implemented: vault-relative validation, absolute/traversal rejection, root-boundary enforcement, symlink escape rejection
-- Implemented: unit/property tests for path safety
-- Pending: create missing directories (`mkdir -p`) in pipeline/writer flow
+- Implemented: optional folder creation (`mkdir -p`) with explicit error propagation
+- Implemented: unit/property tests for path safety and folder creation failures
 
 1. Implement `routing.py` folder validator:
    - accept vault-relative folder only
@@ -199,7 +200,7 @@ Status notes:
    - `../` traversal attempt
    - symlink escape attempt
 
-## 9) LLM Output Contract and Validation (`Not Started`)
+## 9) LLM Output Contract and Validation (`Completed`)
 
 1. Implement `note_schema.py` with Pydantic model:
    - fields from project plan section 5.2
