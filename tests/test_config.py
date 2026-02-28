@@ -109,6 +109,14 @@ def test_load_config_invalid_auth_mode(tmp_path: Path) -> None:
         load_and_validate_startup_config(path)
 
 
+def test_load_config_malformed_toml_raises_config_error(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('vault_root = "/tmp/vault"\nauth_mode = "manual_export"\n[broken\n', encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="Invalid config file"):
+        load_and_validate_startup_config(path)
+
+
 def test_load_config_expands_tilde_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     home.mkdir()

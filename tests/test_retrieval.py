@@ -375,3 +375,34 @@ def test_retrieve_transcript_cookie_mode_empty_file_is_auth_required(tmp_path: P
             config,
         )
     assert exc.value.code == AUTH_REQUIRED
+
+
+def test_retrieve_transcript_cookie_mode_unreadable_file_is_auth_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("session=abc123", encoding="utf-8")
+    config = AppConfig(
+        vault_root=(tmp_path / "vault"),
+        staging_root=tmp_path / "staging",
+        auth_mode="cookie",
+        cookie_file=cookie_file,
+    )
+    config.vault_root.mkdir(exist_ok=True)
+
+    original_read_text = Path.read_text
+
+    def _raise_read_text(self: Path, encoding: str = "utf-8") -> str:
+        if self == cookie_file:
+            raise OSError("permission denied")
+        return original_read_text(self, encoding=encoding)
+
+    monkeypatch.setattr(Path, "read_text", _raise_read_text, raising=True)
+
+    with pytest.raises(RetrievalError) as exc:
+        retrieve_transcript(
+            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+            config,
+        )
+    assert exc.value.code == AUTH_REQUIRED
+    assert "Could not read cookie file" in str(exc.value)

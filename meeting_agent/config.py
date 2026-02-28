@@ -88,8 +88,13 @@ def load_config(path: Path | None = None) -> AppConfig:
     if not config_path.exists():
         raise ConfigError(f"Config not found: {config_path}")
 
-    with config_path.open("rb") as fh:
-        raw = tomllib.load(fh)
+    try:
+        with config_path.open("rb") as fh:
+            raw = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"Invalid config file: {exc}") from exc
+    except OSError as exc:
+        raise ConfigError(f"Could not read config file: {config_path}") from exc
 
     default_folder = raw.get("default_folder") or None
     cookie_file = raw.get("cookie_file") or None

@@ -150,7 +150,13 @@ def _build_auth_headers(config: AppConfig) -> dict[str, str]:
             raise RetrievalError(AUTH_REQUIRED, "Cookie auth mode requires cookie_file.")
         if not config.cookie_file.exists():
             raise RetrievalError(AUTH_REQUIRED, f"Cookie file not found: {config.cookie_file}")
-        cookie_raw = config.cookie_file.read_text(encoding="utf-8").strip()
+        try:
+            cookie_raw = config.cookie_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RetrievalError(
+                AUTH_REQUIRED,
+                f"Could not read cookie file: {config.cookie_file}",
+            ) from exc
         if not cookie_raw:
             raise RetrievalError(AUTH_REQUIRED, f"Cookie file is empty: {config.cookie_file}")
         return {"Cookie": cookie_raw}

@@ -3,7 +3,17 @@
 This document is the execution playbook for implementing everything in `project-plan.md`.
 It is ordered for lowest risk and fastest feedback.
 
-## 1) Bootstrapping and Repository Setup
+Progress snapshot (updated: 2026-02-28):
+- Completed: Steps 1, 2, 4, 5
+- In Progress: Steps 3, 8, 16
+- Not Started: Steps 6, 7, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19
+
+Status legend:
+- `Completed`: implemented and covered by passing tests
+- `In Progress`: partially implemented
+- `Not Started`: not implemented yet
+
+## 1) Bootstrapping and Repository Setup (`Completed`)
 
 1. Create Python project scaffold with `uv`.
 2. Add baseline dependencies:
@@ -43,7 +53,7 @@ tests/
    - `.pytest_cache/`
    - temporary test outputs
 
-## 2) Configuration and Init Flow
+## 2) Configuration and Init Flow (`Completed`)
 
 1. Implement config model in `config.py`:
    - `vault_root: Path`
@@ -66,7 +76,13 @@ tests/
 5. Persist config atomically (`config.toml.tmp` then rename).
 6. Add startup validator used by all commands.
 
-## 3) Error Taxonomy and Exit Codes
+## 3) Error Taxonomy and Exit Codes (`In Progress`)
+
+Status notes:
+- Implemented: `ConfigError`, `LinkValidationError`, `RetrievalError`, `FolderValidationError`
+- Implemented: retrieval error codes (`AUTH_REQUIRED`, `NOT_FOUND`, `RATE_LIMITED`, `NETWORK_ERROR`, `PARSE_ERROR`)
+- Pending: `SchemaValidationError`, `CollisionError`
+- Pending: centralized CLI exit-code mapping and consistent error renderer
 
 1. Define typed errors in `errors.py`:
    - `ConfigError`
@@ -83,7 +99,7 @@ tests/
 2. Map each to stable CLI exit codes.
 3. Implement consistent renderer for user-facing messages.
 
-## 4) Link Parsing and Meeting Identity
+## 4) Link Parsing and Meeting Identity (`Completed`)
 
 1. Implement `links.py`:
    - parse Granola URLs like `https://notes.granola.ai/t/<uuid>-<suffix>`
@@ -97,7 +113,7 @@ tests/
    - invalid host/path
    - malformed UUID
 
-## 5) Retrieval Layer
+## 5) Retrieval Layer (`Completed`)
 
 1. Implement `retrieval.py` interface:
    - `retrieve_transcript(source_url, config) -> RetrievalResult`
@@ -119,7 +135,7 @@ tests/
    - success path
    - each failure category
 
-## 6) Staging and Transcript Normalization
+## 6) Staging and Transcript Normalization (`Not Started`)
 
 1. Implement staging layout creation:
 
@@ -142,7 +158,7 @@ tests/
 5. Optional cache write:
    - save raw retrieval payload to `retrieval-cache/` when debug enabled
 
-## 7) State Management and Idempotency
+## 7) State Management and Idempotency (`Not Started`)
 
 1. State location:
    - `~/.config/meeting-agent/state.json`
@@ -163,7 +179,12 @@ tests/
    - else collision path
 6. Add unit tests for concurrent lock behavior and atomic safety.
 
-## 8) Folder Validation and Path Safety
+## 8) Folder Validation and Path Safety (`In Progress`)
+
+Status notes:
+- Implemented: vault-relative validation, absolute/traversal rejection, root-boundary enforcement, symlink escape rejection
+- Implemented: unit/property tests for path safety
+- Pending: create missing directories (`mkdir -p`) in pipeline/writer flow
 
 1. Implement `routing.py` folder validator:
    - accept vault-relative folder only
@@ -178,7 +199,7 @@ tests/
    - `../` traversal attempt
    - symlink escape attempt
 
-## 9) LLM Output Contract and Validation
+## 9) LLM Output Contract and Validation (`Not Started`)
 
 1. Implement `note_schema.py` with Pydantic model:
    - fields from project plan section 5.2
@@ -195,7 +216,7 @@ tests/
    - keyword/pattern scan before LLM
    - if sensitive, bypass LLM and mark `needs_review: true`
 
-## 10) Note Rendering and Frontmatter
+## 10) Note Rendering and Frontmatter (`Not Started`)
 
 1. Implement markdown renderer in `writer.py`:
    - frontmatter + required sections
@@ -214,7 +235,7 @@ tests/
    - collision fallback: `YYYY-MM-DD HHmm - <Title>.md`
 7. Sanitize filename and enforce safe characters.
 
-## 11) Write Pipeline and Collision Handling
+## 11) Write Pipeline and Collision Handling (`Not Started`)
 
 1. Compute output path:
    - `vault_root / validated_folder / filename`
@@ -230,7 +251,7 @@ tests/
    - do not mark state as processed
    - quarantine diagnostic payload
 
-## 12) Quarantine and Diagnostics
+## 12) Quarantine and Diagnostics (`Not Started`)
 
 1. Implement `quarantine.py` artifact writer:
    - location: `~/granola-export/failed-notes/`
@@ -242,7 +263,7 @@ tests/
    - raw payload snapshot (when available)
 3. Ensure quarantine writes are best effort and never crash primary error reporting.
 
-## 13) Logging
+## 13) Logging (`Not Started`)
 
 1. Implement structured logging in `logging.py`.
 2. Log file:
@@ -265,7 +286,7 @@ tests/
    - write success/failure
    - quarantine action
 
-## 14) CLI Command Wiring
+## 14) CLI Command Wiring (`Not Started`)
 
 1. Implement commands in `cli.py`:
    - `meeting-agent` (interactive default)
@@ -287,7 +308,7 @@ tests/
    - `--force-sensitive`
 4. Ensure identical core pipeline for interactive and non-interactive paths.
 
-## 15) Batch Mode (`process --new`)
+## 15) Batch Mode (`process --new`) (`Not Started`)
 
 1. Scan staged transcripts.
 2. Determine eligibility:
@@ -302,7 +323,13 @@ tests/
    - quarantined
    - failed
 
-## 16) Testing Strategy
+## 16) Testing Strategy (`In Progress`)
+
+Status notes:
+- Implemented: unit/property tests for link parsing and path safety
+- Implemented: config/init and CLI startup-guard tests
+- Implemented: retrieval tests (success, retries, auth, parse, manual export, cookie mode)
+- Pending: schema/state/writer/collision/sensitive/end-to-end flows
 
 1. Unit tests:
    - link parser
@@ -324,7 +351,7 @@ tests/
    - missing metadata
    - malformed payload
 
-## 17) Acceptance Checklist (Must Pass)
+## 17) Acceptance Checklist (Must Pass) (`Not Started`)
 
 1. `meeting-agent` prompts for link and folder and writes note in selected folder.
 2. Output path is always inside `vault_root`.
@@ -336,7 +363,7 @@ tests/
 8. Structured logs include required fields.
 9. Quarantine artifacts are created for failures.
 
-## 18) Suggested Build Order by Milestone
+## 18) Suggested Build Order by Milestone (`Not Started`)
 
 1. Milestone A: Config + CLI skeleton + link parser.
 2. Milestone B: Retrieval + staging + normalization + state.
@@ -345,7 +372,7 @@ tests/
 5. Milestone E: batch mode + logging + quarantine hardening.
 6. Milestone F: full tests + acceptance run on real meetings.
 
-## 19) Definition of Done
+## 19) Definition of Done (`Not Started`)
 
 1. All acceptance checklist items pass.
 2. A full interactive run from Granola link to vault note is successful.
