@@ -4,8 +4,8 @@ This document is the execution playbook for implementing everything in `project-
 It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
-- Completed: Steps 1, 2, 4, 5, 6, 7, 8
-- In Progress: Steps 3, 9, 16
+- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9
+- In Progress: Steps 3, 16
 - Not Started: Steps 10, 11, 12, 13, 14, 15, 17, 18, 19
 
 Status legend:
@@ -211,12 +211,12 @@ Status notes:
    - `../` traversal attempt
    - symlink escape attempt
 
-## 9) LLM Output Contract and Validation (`In Progress`)
+## 9) LLM Output Contract and Validation (`Completed`)
 
 Status notes:
 - Implemented: payload schema validation, folder-candidate enforcement, max-length guard
 - Implemented: deterministic `--no-llm` payload and sensitive pre-check
-- Pending: local runtime adapter integration (`llama.cpp` server client)
+- Implemented: local runtime adapter integration (`llama.cpp` server client)
 
 1. Implement `note_schema.py` with Pydantic model:
    - fields from project plan section 5.2
