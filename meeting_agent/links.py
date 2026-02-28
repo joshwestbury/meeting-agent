@@ -23,7 +23,8 @@ class ParsedGranolaLink:
 
 def parse_granola_link(source_url: str) -> ParsedGranolaLink:
     """Parse and validate Granola transcript URL."""
-    parsed = urlparse(source_url.strip())
+    normalized_source_url = source_url.strip()
+    parsed = urlparse(normalized_source_url)
     if parsed.scheme != "https":
         raise LinkValidationError("Granola link must use https")
     if parsed.netloc.lower() != "notes.granola.ai":
@@ -40,7 +41,7 @@ def parse_granola_link(source_url: str) -> ParsedGranolaLink:
 
     meeting_id = match.group("meeting_uuid").lower()
     return ParsedGranolaLink(
-        source_url=source_url,
+        source_url=normalized_source_url,
         meeting_id=meeting_id,
         raw_token=raw_token,
     )
