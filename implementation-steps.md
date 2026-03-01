@@ -4,9 +4,9 @@ This document is the execution playbook for implementing everything in `project-
 It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
-- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9, 9.1, 10, 11, 12
-- In Progress: Steps 3, 14, 16
-- Not Started: Steps 13, 15, 17, 18, 19
+- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9, 9.1, 10, 11, 12, 13, 14
+- In Progress: Steps 3, 16
+- Not Started: Steps 15, 17, 18, 19
 
 Status legend:
 - `Completed`: implemented and covered by passing tests
@@ -345,7 +345,15 @@ Status notes:
    - raw payload snapshot (when available)
 3. Ensure quarantine writes are best effort and never crash primary error reporting.
 
-## 13) Logging (`Not Started`)
+## 13) Logging (`Completed`)
+
+Status notes:
+- Implemented: structured JSONL logger in `logging.py`
+- Implemented: default log path `~/.config/meeting-agent/meetings.log`
+- Implemented: required event fields (`timestamp`, `command`, `source_key`, `source_url`, `transcript_path`, `action`, `folder_choice`, `folder_reason`, `output_path`, `error`)
+- Implemented: best-effort logging behavior (write failures do not crash CLI flows)
+- Implemented: logging integration for process flow start, retrieval success/failure, schema failures, write outcomes, and user aborts
+- Implemented: logger unit tests
 
 1. Implement structured logging in `logging.py`.
 2. Log file:
@@ -368,13 +376,16 @@ Status notes:
    - write success/failure
    - quarantine action
 
-## 14) CLI Command Wiring (`In Progress`)
+## 14) CLI Command Wiring (`Completed`)
 
 Status notes:
-- Implemented: `meeting-agent init`
-- Implemented: `meeting-agent auth-import`
-- Implemented: `meeting-agent auth-check <granola_link>`
-- Pending: interactive default flow, `process`, `process --new`, `open --latest`, model management commands
+- Implemented: `meeting-agent` interactive default flow (prompt link/folder, preview, confirm, write)
+- Implemented: `meeting-agent process <granola_link>` with `--folder`, `--yes`, `--dry-run`, `--no-llm`, `--force-sensitive`
+- Implemented: `meeting-agent process --new` command wiring with explicit deferred message (Step 15 owns execution logic)
+- Implemented: `meeting-agent open --latest` with state-based latest note resolution
+- Implemented: model management commands (`models pull`, `models doctor`, `models list`)
+- Implemented: shared core processing path for interactive and non-interactive modes
+- Implemented: CLI tests for process/open command behavior
 
 1. Implement commands in `cli.py`:
    - `meeting-agent` (interactive default)

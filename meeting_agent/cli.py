@@ -1,17 +1,37 @@
 from pathlib import Path
+import subprocess
+from datetime import date, datetime
 
 import typer
 
 from meeting_agent import models
+from meeting_agent.auth import import_desktop_session_credentials
 from meeting_agent.config import (
     AppConfig,
     load_and_validate_startup_config,
     save_config,
     validate_init_config,
 )
-from meeting_agent.errors import ConfigError, RetrievalError
-from meeting_agent.auth import import_desktop_session_credentials
+from meeting_agent.errors import (
+    CollisionError,
+    ConfigError,
+    FolderValidationError,
+    RetrievalError,
+    SchemaValidationError,
+    StateError,
+)
+from meeting_agent.llm import (
+    build_no_llm_payload,
+    detect_sensitive,
+    generate_note_payload_with_local_runtime,
+)
+from meeting_agent.logging import log_event
+from meeting_agent.normalize import compute_source_key, compute_transcript_hash, normalize_transcript_text
+from meeting_agent.pipeline import process_note_write, resolve_output_path
 from meeting_agent.retrieval import retrieve_transcript
+from meeting_agent.staging import stage_transcript
+from meeting_agent.state import StateEntry, load_state
+from meeting_agent.writer import RenderContext, build_note_filename
 
 app = typer.Typer(help="Meeting Agent CLI")
 models_app = typer.Typer(help="Local model management commands")
@@ -25,7 +45,7 @@ def main(ctx: typer.Context) -> None:
         return
 
     try:
-        load_and_validate_startup_config()
+        config = load_and_validate_startup_config()
     except ConfigError as exc:
         typer.echo(
             f"Configuration error: {exc}\nRun `meeting-agent init` to create/update config."
@@ -33,7 +53,7 @@ def main(ctx: typer.Context) -> None:
         raise typer.Exit(code=2) from exc
 
     if ctx.invoked_subcommand is None:
-        typer.echo("Interactive flow is not implemented yet. Use `meeting-agent init` first.")
+        _interactive_default_flow(config)
 
 
 @app.command("init")
@@ -126,6 +146,73 @@ def auth_check_command(granola_link: str) -> None:
     typer.echo(f"transcript_chars: {len(result.transcript_text)}")
 
 
+@app.command("process")
+def process_command(
+    granola_link: str | None = typer.Argument(
+        None,
+        help="Granola meeting link (required unless --new is used).",
+    ),
+    folder: str | None = typer.Option(None, "--folder", help="Vault-relative folder destination."),
+    yes: bool = typer.Option(False, "--yes", help="Skip write confirmation prompt."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show resolved output, do not write/state update."),
+    no_llm: bool = typer.Option(False, "--no-llm", help="Bypass LLM and use deterministic template."),
+    force_sensitive: bool = typer.Option(False, "--force-sensitive", help="Force sensitive mode."),
+    process_new: bool = typer.Option(False, "--new", help="Process unprocessed/changed staged transcripts."),
+) -> None:
+    """Process one meeting link through retrieval, generation, and write pipeline."""
+    config = load_and_validate_startup_config()
+    if process_new:
+        typer.echo("`process --new` is not implemented yet. This is planned in Step 15.")
+        raise typer.Exit(code=3)
+
+    if not granola_link:
+        typer.echo("A Granola link is required unless --new is used.")
+        raise typer.Exit(code=2)
+
+    folder_choice = _resolve_folder_choice(config, folder)
+    exit_code = _run_single_process(
+        config=config,
+        granola_link=granola_link,
+        folder_choice=folder_choice,
+        confirm_write=not yes,
+        dry_run=dry_run,
+        no_llm=no_llm,
+        force_sensitive=force_sensitive,
+        command_name="process",
+    )
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
+
+
+@app.command("open")
+def open_command(
+    latest: bool = typer.Option(False, "--latest", help="Open the latest successfully written note.")
+) -> None:
+    """Open the latest processed note from state."""
+    if not latest:
+        typer.echo("Only `meeting-agent open --latest` is supported.")
+        raise typer.Exit(code=2)
+
+    entries = load_state()
+    candidate = _select_latest_processed(entries)
+    if candidate is None:
+        typer.echo("No processed notes found in state.")
+        raise typer.Exit(code=2)
+
+    output_path = Path(candidate.output_path)
+    if not output_path.exists():
+        typer.echo(f"Latest note path no longer exists: {output_path}")
+        raise typer.Exit(code=2)
+
+    try:
+        subprocess.run(["open", str(output_path)], check=True)
+    except (OSError, subprocess.CalledProcessError):
+        typer.echo(f"Unable to open note automatically. Path: {output_path}")
+        raise typer.Exit(code=2)
+
+    typer.echo(f"Opened: {output_path}")
+
+
 @models_app.command("pull")
 def models_pull_command(
     model: str | None = typer.Option(
@@ -207,3 +294,256 @@ def models_list_command() -> None:
     typer.echo("Installed models:")
     for path in installed:
         typer.echo(f"- {path}")
+
+
+def _interactive_default_flow(config: AppConfig) -> None:
+    granola_link = typer.prompt("Granola meeting link")
+    folder_choice = _resolve_folder_choice(config, None, prompt_label="Destination folder (vault-relative)")
+    exit_code = _run_single_process(
+        config=config,
+        granola_link=granola_link,
+        folder_choice=folder_choice,
+        confirm_write=True,
+        dry_run=False,
+        no_llm=False,
+        force_sensitive=False,
+        command_name="interactive",
+    )
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
+
+
+def _resolve_folder_choice(
+    config: AppConfig,
+    folder: str | None,
+    *,
+    prompt_label: str = "Destination folder (vault-relative)",
+) -> str:
+    if folder and folder.strip():
+        return folder.strip()
+    if config.default_folder and config.default_folder.strip():
+        return config.default_folder.strip()
+    return typer.prompt(prompt_label)
+
+
+def _run_single_process(
+    *,
+    config: AppConfig,
+    granola_link: str,
+    folder_choice: str,
+    confirm_write: bool,
+    dry_run: bool,
+    no_llm: bool,
+    force_sensitive: bool,
+    command_name: str,
+) -> int:
+    log_event(command=command_name, source_url=granola_link, action="start")
+    typer.echo("Retrieving transcript...")
+
+    try:
+        retrieval = retrieve_transcript(granola_link, config)
+    except RetrievalError as exc:
+        log_event(
+            command=command_name,
+            source_url=granola_link,
+            action="retrieval_failure",
+            error=f"[{exc.code}] {exc}",
+        )
+        typer.echo(f"Retrieval failed [{exc.code}]: {exc}")
+        return 2
+
+    normalized_text = normalize_transcript_text(retrieval.transcript_text)
+    transcript_hash = compute_transcript_hash(normalized_text)
+    source_key = compute_source_key(retrieval.granola_id, normalized_text)
+    transcript_path = stage_transcript(config.staging_root, retrieval.meeting_id, normalized_text, normalize=False)
+    log_event(
+        command=command_name,
+        source_key=source_key,
+        source_url=granola_link,
+        transcript_path=str(transcript_path),
+        action="retrieval_success",
+    )
+
+    meeting_date = _resolve_meeting_date(retrieval.started_at)
+    title = (retrieval.title or "Meeting Notes").strip() or "Meeting Notes"
+    sensitive = detect_sensitive(normalized_text, force_sensitive=force_sensitive)
+
+    try:
+        if no_llm or config.llm_mode == "none" or sensitive:
+            reason = "sensitive_precheck" if sensitive else "no_llm"
+            payload = build_no_llm_payload(
+                meeting_date=meeting_date,
+                title=title,
+                folder_choice=folder_choice,
+                tags=["meeting"],
+                sensitive=sensitive,
+            )
+        else:
+            reason = "llm"
+            payload = generate_note_payload_with_local_runtime(
+                normalized_text,
+                [folder_choice],
+                model=config.llm_model,
+                server_url=config.llm_server_url,
+            )
+    except SchemaValidationError as exc:
+        log_event(
+            command=command_name,
+            source_key=source_key,
+            source_url=granola_link,
+            transcript_path=str(transcript_path),
+            action="schema_validation_failure",
+            folder_choice=folder_choice,
+            error=str(exc),
+        )
+        typer.echo(f"Schema validation failed: {exc}")
+        return 2
+
+    filename = build_note_filename(
+        meeting_date=payload.meeting_date,
+        title=payload.title,
+        started_at=retrieval.started_at,
+    )
+    try:
+        output_path = resolve_output_path(config.vault_root, payload.folder_choice, filename)
+    except FolderValidationError as exc:
+        log_event(
+            command=command_name,
+            source_key=source_key,
+            source_url=granola_link,
+            transcript_path=str(transcript_path),
+            action="write_failure",
+            folder_choice=payload.folder_choice,
+            folder_reason=reason,
+            error=str(exc),
+        )
+        typer.echo(f"Folder validation failed: {exc}")
+        return 2
+
+    if dry_run:
+        typer.echo("Dry run preview:")
+        typer.echo(f"title: {payload.title}")
+        typer.echo(f"meeting_date: {payload.meeting_date}")
+        typer.echo(f"folder: {payload.folder_choice}")
+        typer.echo(f"filename: {filename}")
+        typer.echo(f"output_path: {output_path}")
+        log_event(
+            command=command_name,
+            source_key=source_key,
+            source_url=granola_link,
+            transcript_path=str(transcript_path),
+            action="dry_run",
+            folder_choice=payload.folder_choice,
+            folder_reason=reason,
+            output_path=str(output_path),
+        )
+        return 0
+
+    if confirm_write:
+        typer.echo("Preview:")
+        typer.echo(f"- Meeting title: {payload.title}")
+        typer.echo(f"- Meeting date: {payload.meeting_date}")
+        typer.echo(f"- Target folder: {payload.folder_choice}")
+        typer.echo(f"- Filename: {filename}")
+        typer.echo(f"- Output path: {output_path}")
+        if not typer.confirm("Write note?", default=False):
+            log_event(
+                command=command_name,
+                source_key=source_key,
+                source_url=granola_link,
+                transcript_path=str(transcript_path),
+                action="aborted_by_user",
+                folder_choice=payload.folder_choice,
+                folder_reason=reason,
+                output_path=str(output_path),
+            )
+            typer.echo("Aborted. No note written.")
+            return 0
+
+    render_context = RenderContext(
+        source_url=granola_link,
+        granola_id=retrieval.granola_id,
+        transcript_hash=transcript_hash,
+        created=datetime.now().astimezone(),
+        vault_folder=payload.folder_choice,
+        needs_review=sensitive,
+    )
+
+    try:
+        result = process_note_write(
+            config=config,
+            payload=payload,
+            render_context=render_context,
+            source_url=granola_link,
+            meeting_id=retrieval.meeting_id,
+            granola_id=retrieval.granola_id,
+            transcript_hash=transcript_hash,
+            source_key=source_key,
+            transcript_path=transcript_path,
+            started_at=retrieval.started_at,
+            raw_payload=retrieval.raw_payload,
+        )
+    except (CollisionError, StateError, FolderValidationError) as exc:
+        log_event(
+            command=command_name,
+            source_key=source_key,
+            source_url=granola_link,
+            transcript_path=str(transcript_path),
+            action="write_failure",
+            folder_choice=payload.folder_choice,
+            folder_reason=reason,
+            output_path=str(output_path),
+            error=str(exc),
+        )
+        typer.echo(f"Write failed: {exc}")
+        return 2
+
+    log_event(
+        command=command_name,
+        source_key=source_key,
+        source_url=granola_link,
+        transcript_path=str(transcript_path),
+        action=f"write_{result.status}",
+        folder_choice=payload.folder_choice,
+        folder_reason=reason,
+        output_path=str(result.output_path or ""),
+        error="" if result.status != "quarantined" else f"quarantine:{result.quarantine_path}",
+    )
+    if result.status == "processed":
+        typer.echo(f"Note written: {result.output_path}")
+        return 0
+    if result.status == "skipped":
+        typer.echo(f"Skipped duplicate transcript. Existing note: {result.output_path}")
+        return 0
+    typer.echo(f"Quarantined due to collision. Artifact: {result.quarantine_path}")
+    return 2
+
+
+def _resolve_meeting_date(started_at: str | None) -> str:
+    if not started_at:
+        return date.today().isoformat()
+    candidate = started_at.strip()
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return date.today().isoformat()
+    return parsed.date().isoformat()
+
+
+def _select_latest_processed(entries: list[StateEntry]) -> StateEntry | None:
+    processed = [entry for entry in entries if entry.status == "processed" and entry.output_path]
+    if not processed:
+        return None
+    return max(processed, key=lambda entry: _parse_ts(entry.last_processed_at))
+
+
+def _parse_ts(value: str) -> datetime:
+    candidate = value.strip()
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(candidate)
+    except ValueError:
+        return datetime.min
