@@ -5,30 +5,9 @@ from meeting_agent.errors import SchemaValidationError
 from meeting_agent.llm import (
     build_no_llm_payload,
     call_local_llama_server,
-    detect_sensitive,
     generate_note_payload_with_local_runtime,
     generate_note_payload_with_llm,
 )
-
-
-def test_detect_sensitive_true_on_ssn_pattern() -> None:
-    assert detect_sensitive("Customer SSN is 123-45-6789") is True
-
-
-def test_detect_sensitive_respects_force_sensitive() -> None:
-    assert detect_sensitive("clean transcript", force_sensitive=True) is True
-
-
-def test_detect_sensitive_supports_extra_patterns() -> None:
-    assert detect_sensitive("contains SECRET_TOKEN", extra_patterns=[r"secret_token"]) is True
-
-
-def test_detect_sensitive_false_on_clean_text() -> None:
-    assert detect_sensitive("project updates and timeline review") is False
-
-
-def test_detect_sensitive_ignores_invalid_extra_pattern() -> None:
-    assert detect_sensitive("clean transcript", extra_patterns=["[invalid"]) is False
 
 
 def test_build_no_llm_payload_returns_valid_template() -> None:

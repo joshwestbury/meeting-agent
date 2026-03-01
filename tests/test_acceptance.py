@@ -81,18 +81,36 @@ def test_acceptance_same_transcript_rerun_does_not_duplicate(tmp_path: Path, mon
     assert len(notes) == 1
 
 
-def test_acceptance_force_sensitive_bypasses_llm(tmp_path: Path, monkeypatch) -> None:
+def test_acceptance_local_mode_uses_llm_path(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path, llm_mode="local"))
     monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", lambda *_args, **_kwargs: _retrieval_result())
+    called = {"llm": False}
 
-    def _should_not_be_called(*_args, **_kwargs):
-        raise AssertionError("LLM call should be bypassed when --force-sensitive is set")
+    def _mock_llm(*_args, **_kwargs):
+        called["llm"] = True
+        from meeting_agent.note_schema import NotePayload
 
-    monkeypatch.setattr("meeting_agent.cli.generate_note_payload_with_local_runtime", _should_not_be_called)
+        return NotePayload.model_validate(
+            {
+                "title": "LLM Title",
+                "meeting_date": "2026-03-01",
+                "attendees": [],
+                "client": "",
+                "project": "",
+                "tags": ["meeting"],
+                "folder_choice": "Inbox/Meetings/",
+                "summary": "LLM summary",
+                "action_items": [],
+                "key_details": ["detail"],
+                "sensitive": False,
+            }
+        )
+
+    monkeypatch.setattr("meeting_agent.cli.generate_note_payload_with_local_runtime", _mock_llm)
 
     result = runner.invoke(
         app,
@@ -102,9 +120,9 @@ def test_acceptance_force_sensitive_bypasses_llm(tmp_path: Path, monkeypatch) ->
             "--folder",
             "Inbox/Meetings/",
             "--yes",
-            "--force-sensitive",
         ],
     )
     assert result.exit_code == 0
+    assert called["llm"] is True
     notes = list((tmp_path / "vault" / "Inbox" / "Meetings").glob("*.md"))
     assert len(notes) == 1

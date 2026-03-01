@@ -231,7 +231,7 @@ Status notes:
 
 Status notes:
 - Implemented: payload schema validation, folder-candidate enforcement, max-length guard
-- Implemented: deterministic `--no-llm` payload and sensitive pre-check
+- Implemented: deterministic `--no-llm` payload
 - Implemented: local runtime adapter integration (`llama.cpp` server client)
 
 1. Implement `note_schema.py` with Pydantic model:
@@ -245,10 +245,7 @@ Status notes:
    - returns structured JSON only
 4. Add `--no-llm` fallback:
    - deterministic template note with metadata + transcript link
-5. Sensitive pre-check:
-   - keyword/pattern scan before LLM
-   - if sensitive, bypass LLM and mark `needs_review: true`
-6. Add local runtime adapter:
+5. Add local runtime adapter:
    - call local `llama.cpp` server at configured `llm_server_url`
    - parse model JSON output and pass through schema validators
 
@@ -382,7 +379,7 @@ Status notes:
 
 Status notes:
 - Implemented: `meeting-agent` interactive default flow (prompt link/folder, preview, confirm, write)
-- Implemented: `meeting-agent process <granola_link>` with `--folder`, `--yes`, `--dry-run`, `--no-llm`, `--force-sensitive`
+- Implemented: `meeting-agent process <granola_link>` with `--folder`, `--yes`, `--dry-run`, `--no-llm`
 - Implemented: full `meeting-agent process --new` execution flow
 - Implemented: `meeting-agent open --latest` with state-based latest note resolution
 - Implemented: model management commands (`models pull`, `models doctor`, `models list`)
@@ -406,7 +403,6 @@ Status notes:
    - `--yes`
    - `--dry-run`
    - `--no-llm`
-   - `--force-sensitive`
 4. Ensure identical core pipeline for interactive and non-interactive paths.
 5. Add model management commands:
    - `meeting-agent models pull`
@@ -442,7 +438,7 @@ Status notes:
 - Implemented: unit/property tests for link parsing and path safety
 - Implemented: config/init and CLI startup-guard tests
 - Implemented: retrieval tests (success, retries, auth, parse, manual export, cookie mode)
-- Implemented: schema/state/writer/collision/sensitive and batch/integration flows
+- Implemented: schema/state/writer/collision and batch/integration flows
 - Implemented: acceptance-style end-to-end CLI tests for interactive and process paths
 
 1. Unit tests:
@@ -455,7 +451,6 @@ Status notes:
    - interactive flow via CLI runner
    - one-shot link processing
    - collision handling behavior
-   - sensitive bypass behavior
 3. End-to-end tests:
    - mock retrieval + real filesystem temp vault
    - assert final markdown content and metadata
@@ -473,7 +468,7 @@ Status notes:
   - vault-root path safety enforcement
   - rerun no-duplicate behavior
   - collision + quarantine behavior
-  - `--no-llm` and sensitive bypass paths
+  - `--no-llm` path behavior
   - `process --new` continue-on-failure behavior
   - state lock/atomic write protections
   - structured logging fields
@@ -483,7 +478,7 @@ Status notes:
 2. Output path is always inside `vault_root`.
 3. Same transcript rerun does not duplicate output.
 4. Collision policy behavior matches project plan exactly.
-5. `--no-llm` and sensitive paths work end-to-end.
+5. `--no-llm` path works end-to-end.
 6. `process --new` continues after item failures.
 7. State writes are atomic and lock-protected.
 8. Structured logs include required fields.
@@ -498,7 +493,7 @@ Status notes:
 1. Milestone A: Config + CLI skeleton + link parser.
 2. Milestone B: Retrieval + staging + normalization + state.
 3. Milestone C: Folder safety + writer + collision policy.
-4. Milestone D: LLM integration + `--no-llm` + sensitive mode.
+4. Milestone D: LLM integration + `--no-llm`.
 5. Milestone E: batch mode + logging + quarantine hardening.
 6. Milestone F: full tests + acceptance run on real meetings.
 

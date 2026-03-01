@@ -51,6 +51,8 @@ def process_note_write(
     transcript_hash: str,
     source_key: str,
     transcript_path: Path,
+    transcript_text: str | None = None,
+    include_full_transcript: bool = False,
     started_at: str | None = None,
     state_path: Path | None = None,
     raw_payload: dict | None = None,
@@ -115,7 +117,12 @@ def process_note_write(
             intended_output=intended_output,
             started_at=started_at,
         )
-        markdown = render_markdown_note(payload, render_context)
+        markdown = render_markdown_note(
+            payload,
+            render_context,
+            include_full_transcript=include_full_transcript,
+            transcript_text=transcript_text,
+        )
 
         try:
             write_note_atomic(output_path, markdown)
@@ -160,7 +167,9 @@ def _choose_output_path_for_write(
     started_at: str | None,
 ) -> Path:
     if decision.action == "update" and decision.existing_entry and decision.existing_entry.output_path:
-        return Path(decision.existing_entry.output_path)
+        existing_output = Path(decision.existing_entry.output_path)
+        if _is_within_vault(existing_output, config.vault_root):
+            return existing_output
 
     if not intended_output.exists():
         return intended_output
@@ -175,6 +184,14 @@ def _choose_output_path_for_write(
     if alt_output.exists():
         raise CollisionError(f"Collision detected for output path: {intended_output}")
     return alt_output
+
+
+def _is_within_vault(path: Path, vault_root: Path) -> bool:
+    try:
+        path.resolve().relative_to(vault_root.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _write_collision_quarantine(

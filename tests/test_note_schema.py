@@ -160,3 +160,28 @@ def test_parse_llm_note_payload_rejects_bad_date_format() -> None:
     }
     with pytest.raises(SchemaValidationError):
         parse_llm_note_payload(payload)
+
+
+def test_parse_llm_note_payload_coerces_common_model_shape_drift() -> None:
+    note = parse_llm_note_payload(
+        {
+            "title": "Weekly Sync",
+            "meeting_date": "2026-02-28",
+            "attendees": "Alex",
+            "client": "",
+            "project": "",
+            "tags": {"topic": "meeting"},
+            "folder_choice": "Inbox/Meetings/",
+            "summary": "Summary",
+            "action_items": {"next_step": "Send pricing"},
+            "key_details": {"provisioning_stages": "at order product level"},
+            "decisions": None,
+            "open_questions": None,
+            "sensitive": ["The discussion included integration architecture"],
+        }
+    )
+    assert note.attendees == ["Alex"]
+    assert note.tags == ["topic: meeting"]
+    assert note.action_items == ["next_step: Send pricing"]
+    assert note.key_details == ["provisioning_stages: at order product level"]
+    assert note.sensitive is False

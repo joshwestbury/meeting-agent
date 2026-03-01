@@ -14,39 +14,12 @@ from meeting_agent.note_schema import (
 )
 
 
-_DEFAULT_SENSITIVE_PATTERNS = [
-    re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),  # SSN-like
-    re.compile(r"\b(account|routing)\b", re.IGNORECASE),
-    re.compile(r"\b(legal|medical|diagnosis|patient|hipaa)\b", re.IGNORECASE),
-]
-
-
-def detect_sensitive(
-    transcript_text: str,
-    *,
-    extra_patterns: list[str] | None = None,
-    force_sensitive: bool = False,
-) -> bool:
-    if force_sensitive:
-        return True
-
-    patterns = list(_DEFAULT_SENSITIVE_PATTERNS)
-    for pattern in extra_patterns or []:
-        try:
-            patterns.append(re.compile(pattern, re.IGNORECASE))
-        except re.error:
-            continue
-
-    return any(pattern.search(transcript_text) for pattern in patterns)
-
-
 def build_no_llm_payload(
     *,
     meeting_date: str | None = None,
     title: str = "Meeting Notes",
     folder_choice: str,
     tags: list[str] | None = None,
-    sensitive: bool = False,
 ) -> NotePayload:
     resolved_date = meeting_date or datetime.now().date().isoformat()
     return NotePayload(
@@ -62,7 +35,7 @@ def build_no_llm_payload(
         key_details=["Transcript available in staging."],
         decisions=[],
         open_questions=[],
-        sensitive=sensitive,
+        sensitive=False,
     )
 
 

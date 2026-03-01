@@ -86,6 +86,62 @@ def test_process_dry_run_no_llm_outputs_preview(tmp_path: Path, monkeypatch) -> 
     assert "output_path:" in result.output
 
 
+def test_process_rejects_summary_and_full_together(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path))
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+            "--summary",
+            "--full",
+        ],
+    )
+    assert result.exit_code == 3
+    assert "Use either --summary or --full" in result.output
+
+
+def test_process_full_writes_full_transcript_section(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path))
+
+    def _mock_retrieve(_: str, __: AppConfig, client=None, max_retries: int = 2) -> RetrievalResult:
+        return RetrievalResult(
+            granola_id="g1",
+            meeting_id="29250e01-0751-4e02-9b24-f6d06f878b04",
+            title="Weekly Sync",
+            started_at="2026-03-01T09:12:00-06:00",
+            attendees=[],
+            transcript_text="Speaker A: hello\nSpeaker B: hi",
+            raw_payload={},
+        )
+
+    monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", _mock_retrieve)
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+            "--folder",
+            "Inbox/Meetings/",
+            "--yes",
+            "--no-llm",
+            "--full",
+        ],
+    )
+    assert result.exit_code == 0
+    note_files = list((tmp_path / "vault" / "Inbox" / "Meetings").glob("*.md"))
+    assert len(note_files) == 1
+    content = note_files[0].read_text(encoding="utf-8")
+    assert "## Full Transcript" in content
+    assert "Speaker A: hello" in content
+
+
 def test_process_new_updates_when_staged_hash_changes(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     home = tmp_path / "home"

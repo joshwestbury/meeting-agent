@@ -44,7 +44,13 @@ def build_note_filename(
     return f"{meeting_date} {stamp} - {safe_title}.md"
 
 
-def render_markdown_note(payload: NotePayload, context: RenderContext) -> str:
+def render_markdown_note(
+    payload: NotePayload,
+    context: RenderContext,
+    *,
+    include_full_transcript: bool = False,
+    transcript_text: str | None = None,
+) -> str:
     frontmatter = {
         "type": "meeting",
         "source": "granola",
@@ -79,6 +85,8 @@ def render_markdown_note(payload: NotePayload, context: RenderContext) -> str:
         sections.extend(["", "## Open Questions", _render_list_or_none(payload.open_questions)])
 
     sections.extend(["", f"Transcript Source: {context.source_url}"])
+    if include_full_transcript and transcript_text is not None:
+        sections.extend(["", "## Full Transcript", transcript_text.strip() or "_(empty transcript)_"])
     body = "\n".join(sections).strip() + "\n"
     return f"---\n{fm}\n---\n\n{body}"
 

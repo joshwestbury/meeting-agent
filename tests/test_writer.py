@@ -96,6 +96,24 @@ def test_render_markdown_note_omits_optional_empty_sections() -> None:
     assert "## Open Questions" not in rendered
 
 
+def test_render_markdown_note_includes_full_transcript_when_enabled() -> None:
+    note = _payload()
+    rendered = render_markdown_note(
+        note,
+        RenderContext(
+            source_url="https://notes.granola.ai/t/abc",
+            granola_id="",
+            transcript_hash="hash-xyz",
+            created=datetime(2026, 3, 1, 9, 12, 0),
+            vault_folder="Inbox/Meetings/",
+        ),
+        include_full_transcript=True,
+        transcript_text="Speaker A: hello\nSpeaker B: hi",
+    )
+    assert "## Full Transcript" in rendered
+    assert "Speaker A: hello" in rendered
+
+
 def test_write_note_atomic_writes_content(tmp_path: Path) -> None:
     output = tmp_path / "notes" / "2026-03-01 - Weekly Sync.md"
     markdown = "# Note\n"

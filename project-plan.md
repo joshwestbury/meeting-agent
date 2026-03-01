@@ -318,7 +318,6 @@ Must map failures to explicit user-facing errors:
 - `--yes` (skip final confirmation)
 - `--dry-run` (no writes, show resolved output path/metadata)
 - `--no-llm`
-- `--force-sensitive`
 
 ---
 
@@ -424,27 +423,11 @@ Full transcript: [transcript.txt](file:///Users/<you>/granola-export/transcripts
 
 ---
 
-## Phase 8: Privacy and Safe Mode
+## Phase 8: Safe Mode
 
 ### 8.1 `--no-llm` mode
 
 Add a deterministic fallback that creates a template note with transcript link and metadata only.
-
-### 8.2 Sensitive handling
-
-If transcript is flagged `sensitive: true`:
-- Skip LLM summarization.
-- Write minimal note with `needs_review: true`.
-- Route to `Inbox/Meetings/` for manual handling.
-
-### 8.3 Sensitive flag source (pre-LLM)
-
-Set `sensitive: true` before any LLM call using deterministic rules:
-- Keyword match list (for example: SSN patterns, bank account terms, legal/medical markers).
-- Optional user-maintained allow/deny term files in config.
-- Optional `--force-sensitive` CLI override.
-
-If any rule matches, bypass LLM and follow 8.2.
 
 ---
 

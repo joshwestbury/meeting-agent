@@ -24,7 +24,6 @@ from meeting_agent.errors import (
 from meeting_agent.exit_codes import exit_code_for_error, render_error_message
 from meeting_agent.llm import (
     build_no_llm_payload,
-    detect_sensitive,
     generate_note_payload_with_local_runtime,
 )
 from meeting_agent.logging import log_event
@@ -157,19 +156,25 @@ def process_command(
     yes: bool = typer.Option(False, "--yes", help="Skip write confirmation prompt."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show resolved output, do not write/state update."),
     no_llm: bool = typer.Option(False, "--no-llm", help="Bypass LLM and use deterministic template."),
-    force_sensitive: bool = typer.Option(False, "--force-sensitive", help="Force sensitive mode."),
+    summary: bool = typer.Option(False, "--summary", help="Write summary note format (default behavior)."),
+    full: bool = typer.Option(False, "--full", help="Include full transcript body in note."),
     process_new: bool = typer.Option(False, "--new", help="Process unprocessed/changed staged transcripts."),
 ) -> None:
     """Process one meeting link through retrieval, generation, and write pipeline."""
     config = load_and_validate_startup_config()
+    if summary and full:
+        typer.echo("Use either --summary or --full, not both.")
+        raise typer.Exit(code=3)
+    output_mode = "full" if full else "summary"
+
     if process_new:
         folder_choice = _resolve_folder_choice(config, folder)
         exit_code = _run_batch_process_new(
             config=config,
             folder_choice=folder_choice,
             no_llm=no_llm,
-            force_sensitive=force_sensitive,
             dry_run=dry_run,
+            output_mode=output_mode,
             command_name="process_new",
         )
         if exit_code != 0:
@@ -188,7 +193,7 @@ def process_command(
         confirm_write=not yes,
         dry_run=dry_run,
         no_llm=no_llm,
-        force_sensitive=force_sensitive,
+        output_mode=output_mode,
         command_name="process",
     )
     if exit_code != 0:
@@ -317,7 +322,7 @@ def _interactive_default_flow(config: AppConfig) -> None:
         confirm_write=True,
         dry_run=False,
         no_llm=False,
-        force_sensitive=False,
+        output_mode="summary",
         command_name="interactive",
     )
     if exit_code != 0:
@@ -345,7 +350,7 @@ def _run_single_process(
     confirm_write: bool,
     dry_run: bool,
     no_llm: bool,
-    force_sensitive: bool,
+    output_mode: str,
     command_name: str,
 ) -> int:
     log_event(command=command_name, source_url=granola_link, action="start")
@@ -378,17 +383,15 @@ def _run_single_process(
 
     meeting_date = _resolve_meeting_date(retrieval.started_at)
     title = (retrieval.title or "Meeting Notes").strip() or "Meeting Notes"
-    sensitive = detect_sensitive(normalized_text, force_sensitive=force_sensitive)
 
     try:
-        if no_llm or config.llm_mode == "none" or sensitive:
-            reason = "sensitive_precheck" if sensitive else "no_llm"
+        if no_llm or config.llm_mode == "none":
+            reason = "no_llm"
             payload = build_no_llm_payload(
                 meeting_date=meeting_date,
                 title=title,
                 folder_choice=folder_choice,
                 tags=["meeting"],
-                sensitive=sensitive,
             )
         else:
             reason = "llm"
@@ -478,7 +481,7 @@ def _run_single_process(
         transcript_hash=transcript_hash,
         created=datetime.now().astimezone(),
         vault_folder=payload.folder_choice,
-        needs_review=sensitive,
+        needs_review=False,
     )
 
     try:
@@ -492,6 +495,8 @@ def _run_single_process(
             transcript_hash=transcript_hash,
             source_key=source_key,
             transcript_path=transcript_path,
+            transcript_text=normalized_text,
+            include_full_transcript=(output_mode == "full"),
             started_at=retrieval.started_at,
             raw_payload=retrieval.raw_payload,
         )
@@ -586,8 +591,8 @@ def _run_batch_process_new(
     config: AppConfig,
     folder_choice: str,
     no_llm: bool,
-    force_sensitive: bool,
     dry_run: bool,
+    output_mode: str,
     command_name: str,
 ) -> int:
     transcripts_dir = config.staging_root / "transcripts"
@@ -622,7 +627,6 @@ def _run_batch_process_new(
         identity_granola_id = meeting_id
         source_key = compute_source_key(identity_granola_id, normalized)
         title = _title_from_meeting_id(meeting_id)
-        sensitive = detect_sensitive(normalized, force_sensitive=force_sensitive)
 
         try:
             if dry_run:
@@ -631,15 +635,13 @@ def _run_batch_process_new(
                     title=title,
                     folder_choice=folder_choice,
                     tags=["meeting", "staged"],
-                    sensitive=sensitive,
                 )
-            elif no_llm or config.llm_mode == "none" or sensitive:
+            elif no_llm or config.llm_mode == "none":
                 payload = build_no_llm_payload(
                     meeting_date=date.today().isoformat(),
                     title=title,
                     folder_choice=folder_choice,
                     tags=["meeting", "staged"],
-                    sensitive=sensitive,
                 )
             else:
                 payload = generate_note_payload_with_local_runtime(
@@ -681,7 +683,7 @@ def _run_batch_process_new(
                     transcript_hash=transcript_hash,
                     created=datetime.now().astimezone(),
                     vault_folder=folder_choice,
-                    needs_review=sensitive,
+                    needs_review=False,
                 ),
                 source_url=source_url,
                 meeting_id=meeting_id,
@@ -689,6 +691,8 @@ def _run_batch_process_new(
                 transcript_hash=transcript_hash,
                 source_key=source_key,
                 transcript_path=transcript_file,
+                transcript_text=normalized,
+                include_full_transcript=(output_mode == "full"),
                 raw_payload={"source": "staged_transcript"},
             )
         except (CollisionError, FolderValidationError, StateError) as exc:

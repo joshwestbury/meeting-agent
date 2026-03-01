@@ -119,6 +119,32 @@ def test_process_note_write_update_in_place_uses_existing_output_path(tmp_path: 
     assert "## Summary" in existing_path.read_text(encoding="utf-8")
 
 
+def test_process_note_write_update_ignores_stale_output_path_outside_current_vault(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    state_path = tmp_path / "state.json"
+    stale_path = tmp_path / "old-vault" / "Inbox" / "Meetings" / "existing.md"
+    stale_path.parent.mkdir(parents=True, exist_ok=True)
+    stale_path.write_text("old", encoding="utf-8")
+    save_state([_state_entry(granola_id="g1", output_path=str(stale_path))], state_path)
+
+    result = process_note_write(
+        config=config,
+        payload=_payload(),
+        render_context=_render_ctx(),
+        source_url="https://notes.granola.ai/t/new",
+        meeting_id="new",
+        granola_id="g1",
+        transcript_hash="hash-new",
+        source_key="g1",
+        transcript_path=tmp_path / "staging" / "transcripts" / "new.txt",
+        state_path=state_path,
+    )
+    assert result.status == "processed"
+    assert result.output_path is not None
+    assert result.output_path.resolve().is_relative_to(config.vault_root.resolve())
+    assert result.output_path != stale_path
+
+
 def test_process_note_write_skip_on_matching_hash(tmp_path: Path) -> None:
     config = _config(tmp_path)
     state_path = tmp_path / "state.json"
