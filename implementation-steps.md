@@ -4,9 +4,9 @@ This document is the execution playbook for implementing everything in `project-
 It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
-- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9, 9.1, 10, 11, 12, 13, 14
-- In Progress: Steps 3, 16
-- Not Started: Steps 15, 17, 18, 19
+- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9, 9.1, 10, 11, 12, 13, 14, 15, 16, 17
+- In Progress: Steps 3
+- Not Started: Steps 18, 19
 
 Status legend:
 - `Completed`: implemented and covered by passing tests
@@ -411,7 +411,15 @@ Status notes:
    - `meeting-agent models doctor`
    - `meeting-agent models list`
 
-## 15) Batch Mode (`process --new`) (`Not Started`)
+## 15) Batch Mode (`process --new`) (`Completed`)
+
+Status notes:
+- Implemented: staged transcript scan at `staging_root/transcripts/*.txt`
+- Implemented: eligibility checks for unprocessed or changed transcript hashes
+- Implemented: per-item processing with shared write pipeline and identity/state semantics
+- Implemented: continue-on-error behavior across items
+- Implemented: run summary (`processed`, `updated`, `skipped`, `quarantined`, `failed`)
+- Implemented: unit/CLI tests for failure continuation and changed-hash update flow
 
 1. Scan staged transcripts.
 2. Determine eligibility:
@@ -426,13 +434,14 @@ Status notes:
    - quarantined
    - failed
 
-## 16) Testing Strategy (`In Progress`)
+## 16) Testing Strategy (`Completed`)
 
 Status notes:
 - Implemented: unit/property tests for link parsing and path safety
 - Implemented: config/init and CLI startup-guard tests
 - Implemented: retrieval tests (success, retries, auth, parse, manual export, cookie mode)
-- Pending: schema/state/writer/collision/sensitive/end-to-end flows
+- Implemented: schema/state/writer/collision/sensitive and batch/integration flows
+- Implemented: acceptance-style end-to-end CLI tests for interactive and process paths
 
 1. Unit tests:
    - link parser
@@ -454,7 +463,19 @@ Status notes:
    - missing metadata
    - malformed payload
 
-## 17) Acceptance Checklist (Must Pass) (`Not Started`)
+## 17) Acceptance Checklist (Must Pass) (`Completed`)
+
+Status notes:
+- Checklist behaviors are covered by passing unit/integration/acceptance tests, including:
+  - interactive prompt/write flow
+  - vault-root path safety enforcement
+  - rerun no-duplicate behavior
+  - collision + quarantine behavior
+  - `--no-llm` and sensitive bypass paths
+  - `process --new` continue-on-failure behavior
+  - state lock/atomic write protections
+  - structured logging fields
+  - quarantine artifact creation
 
 1. `meeting-agent` prompts for link and folder and writes note in selected folder.
 2. Output path is always inside `vault_root`.

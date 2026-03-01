@@ -4,6 +4,8 @@ from typer.testing import CliRunner
 
 from meeting_agent.cli import app
 from meeting_agent.config import AppConfig
+from meeting_agent.errors import CollisionError
+from meeting_agent.pipeline import PipelineResult
 from meeting_agent.retrieval import RetrievalResult
 from meeting_agent.state import StateEntry
 
@@ -21,14 +23,33 @@ def _config(tmp_path: Path) -> AppConfig:
     )
 
 
-def test_process_new_not_implemented(tmp_path: Path, monkeypatch) -> None:
+def test_process_new_continues_after_item_failure(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path))
+    monkeypatch.setattr("meeting_agent.cli.load_state", lambda: [])
+    transcripts = tmp_path / "staging" / "transcripts"
+    transcripts.mkdir(parents=True, exist_ok=True)
+    (transcripts / "a.txt").write_text("one", encoding="utf-8")
+    (transcripts / "b.txt").write_text("two", encoding="utf-8")
 
-    result = runner.invoke(app, ["process", "--new"])
+    def _mock_process_note_write(**kwargs):
+        if kwargs["meeting_id"] == "a":
+            raise CollisionError("boom")
+        return PipelineResult(
+            status="processed",
+            output_path=tmp_path / "vault" / "Inbox" / "Meetings" / "b.md",
+            quarantine_path=None,
+            decision_reason="no_matching_identity",
+        )
 
-    assert result.exit_code == 3
-    assert "not implemented yet" in result.output
+    monkeypatch.setattr("meeting_agent.cli.process_note_write", _mock_process_note_write)
+
+    result = runner.invoke(app, ["process", "--new", "--folder", "Inbox/Meetings/", "--yes", "--no-llm"])
+
+    assert result.exit_code == 2
+    assert "Batch summary:" in result.output
+    assert "- processed: 1" in result.output
+    assert "- failed: 1" in result.output
 
 
 def test_process_dry_run_no_llm_outputs_preview(tmp_path: Path, monkeypatch) -> None:
@@ -63,6 +84,28 @@ def test_process_dry_run_no_llm_outputs_preview(tmp_path: Path, monkeypatch) -> 
     assert result.exit_code == 0
     assert "Dry run preview:" in result.output
     assert "output_path:" in result.output
+
+
+def test_process_new_updates_when_staged_hash_changes(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path))
+
+    transcripts = tmp_path / "staging" / "transcripts"
+    transcripts.mkdir(parents=True, exist_ok=True)
+    target = transcripts / "a.txt"
+    target.write_text("version one", encoding="utf-8")
+
+    first = runner.invoke(app, ["process", "--new", "--folder", "Inbox/Meetings/", "--yes", "--no-llm"])
+    assert first.exit_code == 0
+    assert "- processed: 1" in first.output
+
+    target.write_text("version two", encoding="utf-8")
+    second = runner.invoke(app, ["process", "--new", "--folder", "Inbox/Meetings/", "--yes", "--no-llm"])
+    assert second.exit_code == 0
+    assert "- updated: 1" in second.output
 
 
 def test_open_latest_uses_state_and_open_command(tmp_path: Path, monkeypatch) -> None:

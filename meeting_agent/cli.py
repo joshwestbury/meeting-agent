@@ -1,6 +1,7 @@
 from pathlib import Path
 import subprocess
 from datetime import date, datetime
+from dataclasses import dataclass
 
 import typer
 
@@ -162,8 +163,18 @@ def process_command(
     """Process one meeting link through retrieval, generation, and write pipeline."""
     config = load_and_validate_startup_config()
     if process_new:
-        typer.echo("`process --new` is not implemented yet. This is planned in Step 15.")
-        raise typer.Exit(code=3)
+        folder_choice = _resolve_folder_choice(config, folder)
+        exit_code = _run_batch_process_new(
+            config=config,
+            folder_choice=folder_choice,
+            no_llm=no_llm,
+            force_sensitive=force_sensitive,
+            dry_run=dry_run,
+            command_name="process_new",
+        )
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
+        return
 
     if not granola_link:
         typer.echo("A Granola link is required unless --new is used.")
@@ -354,7 +365,8 @@ def _run_single_process(
 
     normalized_text = normalize_transcript_text(retrieval.transcript_text)
     transcript_hash = compute_transcript_hash(normalized_text)
-    source_key = compute_source_key(retrieval.granola_id, normalized_text)
+    identity_granola_id = (retrieval.granola_id or "").strip() or retrieval.meeting_id
+    source_key = compute_source_key(identity_granola_id, normalized_text)
     transcript_path = stage_transcript(config.staging_root, retrieval.meeting_id, normalized_text, normalize=False)
     log_event(
         command=command_name,
@@ -462,7 +474,7 @@ def _run_single_process(
 
     render_context = RenderContext(
         source_url=granola_link,
-        granola_id=retrieval.granola_id,
+        granola_id=identity_granola_id,
         transcript_hash=transcript_hash,
         created=datetime.now().astimezone(),
         vault_folder=payload.folder_choice,
@@ -476,7 +488,7 @@ def _run_single_process(
             render_context=render_context,
             source_url=granola_link,
             meeting_id=retrieval.meeting_id,
-            granola_id=retrieval.granola_id,
+            granola_id=identity_granola_id,
             transcript_hash=transcript_hash,
             source_key=source_key,
             transcript_path=transcript_path,
@@ -547,3 +559,182 @@ def _parse_ts(value: str) -> datetime:
         return datetime.fromisoformat(candidate)
     except ValueError:
         return datetime.min
+
+
+@dataclass(frozen=True)
+class _BatchCounters:
+    processed: int = 0
+    updated: int = 0
+    skipped: int = 0
+    quarantined: int = 0
+    failed: int = 0
+
+    def bump(self, field: str) -> "_BatchCounters":
+        values = {
+            "processed": self.processed,
+            "updated": self.updated,
+            "skipped": self.skipped,
+            "quarantined": self.quarantined,
+            "failed": self.failed,
+        }
+        values[field] += 1
+        return _BatchCounters(**values)
+
+
+def _run_batch_process_new(
+    *,
+    config: AppConfig,
+    folder_choice: str,
+    no_llm: bool,
+    force_sensitive: bool,
+    dry_run: bool,
+    command_name: str,
+) -> int:
+    transcripts_dir = config.staging_root / "transcripts"
+    staged_files = sorted(transcripts_dir.glob("*.txt"))
+    if not staged_files:
+        typer.echo(f"No staged transcripts found at {transcripts_dir}")
+        return 0
+
+    counters = _BatchCounters()
+    for transcript_file in staged_files:
+        try:
+            normalized = normalize_transcript_text(transcript_file.read_text(encoding="utf-8"))
+        except OSError as exc:
+            counters = counters.bump("failed")
+            typer.echo(f"[failed] {transcript_file.name}: {exc}")
+            log_event(
+                command=command_name,
+                transcript_path=str(transcript_file),
+                source_url=f"staged://{transcript_file.stem}",
+                action="read_failure",
+                error=str(exc),
+            )
+            continue
+
+        transcript_hash = compute_transcript_hash(normalized)
+        if _batch_should_skip(config, transcript_file, transcript_hash):
+            counters = counters.bump("skipped")
+            continue
+
+        meeting_id = transcript_file.stem
+        source_url = f"staged://{meeting_id}"
+        identity_granola_id = meeting_id
+        source_key = compute_source_key(identity_granola_id, normalized)
+        title = _title_from_meeting_id(meeting_id)
+        sensitive = detect_sensitive(normalized, force_sensitive=force_sensitive)
+
+        try:
+            if dry_run:
+                payload = build_no_llm_payload(
+                    meeting_date=date.today().isoformat(),
+                    title=title,
+                    folder_choice=folder_choice,
+                    tags=["meeting", "staged"],
+                    sensitive=sensitive,
+                )
+            elif no_llm or config.llm_mode == "none" or sensitive:
+                payload = build_no_llm_payload(
+                    meeting_date=date.today().isoformat(),
+                    title=title,
+                    folder_choice=folder_choice,
+                    tags=["meeting", "staged"],
+                    sensitive=sensitive,
+                )
+            else:
+                payload = generate_note_payload_with_local_runtime(
+                    normalized,
+                    [folder_choice],
+                    model=config.llm_model,
+                    server_url=config.llm_server_url,
+                )
+        except SchemaValidationError as exc:
+            counters = counters.bump("failed")
+            typer.echo(f"[failed] {transcript_file.name}: schema validation failed: {exc}")
+            log_event(
+                command=command_name,
+                source_key=source_key,
+                source_url=source_url,
+                transcript_path=str(transcript_file),
+                action="schema_validation_failure",
+                folder_choice=folder_choice,
+                error=str(exc),
+            )
+            continue
+
+        if dry_run:
+            preview_filename = build_note_filename(meeting_date=payload.meeting_date, title=payload.title)
+            preview_output = resolve_output_path(config.vault_root, folder_choice, preview_filename)
+            typer.echo(f"[dry-run] {transcript_file.name} -> {preview_output}")
+            counters = counters.bump("processed")
+            continue
+
+        try:
+            result = process_note_write(
+                config=config,
+                payload=payload,
+                render_context=RenderContext(
+                    source_url=source_url,
+                    granola_id=identity_granola_id,
+                    transcript_hash=transcript_hash,
+                    created=datetime.now().astimezone(),
+                    vault_folder=folder_choice,
+                    needs_review=sensitive,
+                ),
+                source_url=source_url,
+                meeting_id=meeting_id,
+                granola_id=identity_granola_id,
+                transcript_hash=transcript_hash,
+                source_key=source_key,
+                transcript_path=transcript_file,
+                raw_payload={"source": "staged_transcript"},
+            )
+        except (CollisionError, FolderValidationError, StateError) as exc:
+            counters = counters.bump("failed")
+            typer.echo(f"[failed] {transcript_file.name}: {exc}")
+            log_event(
+                command=command_name,
+                source_key=source_key,
+                source_url=source_url,
+                transcript_path=str(transcript_file),
+                action="write_failure",
+                folder_choice=folder_choice,
+                output_path="",
+                error=str(exc),
+            )
+            continue
+
+        if result.status == "processed":
+            if result.decision_reason == "matching_granola_id":
+                counters = counters.bump("updated")
+            else:
+                counters = counters.bump("processed")
+        elif result.status == "skipped":
+            counters = counters.bump("skipped")
+        elif result.status == "quarantined":
+            counters = counters.bump("quarantined")
+        else:
+            counters = counters.bump("failed")
+
+    typer.echo("Batch summary:")
+    typer.echo(f"- processed: {counters.processed}")
+    typer.echo(f"- updated: {counters.updated}")
+    typer.echo(f"- skipped: {counters.skipped}")
+    typer.echo(f"- quarantined: {counters.quarantined}")
+    typer.echo(f"- failed: {counters.failed}")
+
+    return 2 if counters.failed > 0 else 0
+
+
+def _batch_should_skip(config: AppConfig, transcript_file: Path, transcript_hash: str) -> bool:
+    entries = load_state()
+    file_path = str(transcript_file)
+    for entry in entries:
+        if entry.transcript_path == file_path:
+            return entry.transcript_hash == transcript_hash
+    return any(entry.transcript_hash == transcript_hash for entry in entries)
+
+
+def _title_from_meeting_id(meeting_id: str) -> str:
+    cleaned = meeting_id.replace("-", " ").strip()
+    return cleaned if cleaned else "Meeting Notes"
