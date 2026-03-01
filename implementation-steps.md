@@ -5,8 +5,8 @@ It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
 - Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9
-- In Progress: Steps 3, 16
-- Not Started: Steps 10, 11, 12, 13, 14, 15, 17, 18, 19
+- In Progress: Steps 3, 14, 16
+- Not Started: Steps 10, 11, 12, 13, 15, 17, 18, 19
 
 Status legend:
 - `Completed`: implemented and covered by passing tests
@@ -21,6 +21,7 @@ Status legend:
    - `pydantic` for schemas
    - `pyyaml` for frontmatter handling
    - `httpx` for retrieval
+   - `keyring` for local credential storage
    - `python-dateutil` for date parsing
    - `platformdirs` for config/state paths
    - `pytest` for tests
@@ -60,7 +61,7 @@ tests/
    - `staging_root: Path`
    - `default_folder: str | None`
    - `timezone: str`
-   - `auth_mode: Literal["token", "cookie", "manual_export"]`
+   - `auth_mode: Literal["token", "cookie", "manual_export", "desktop_session"]`
 2. Config file location:
    - `~/.config/meeting-agent/config.toml`
 3. Implement `meeting-agent init`:
@@ -118,7 +119,9 @@ Status notes:
 ## 4) Link Parsing and Meeting Identity (`Completed`)
 
 1. Implement `links.py`:
-   - parse Granola URLs like `https://notes.granola.ai/t/<uuid>-<suffix>`
+   - parse Granola URLs like:
+     - `https://notes.granola.ai/t/<uuid>-<suffix>`
+     - `https://notes.granola.ai/d/<uuid>`
    - accept query params/fragments but ignore for ID extraction
 2. Return structured object:
    - `source_url`
@@ -134,6 +137,7 @@ Status notes:
 Status notes:
 - Implemented: remote auth for `token`, `cookie`, and `desktop_session`
 - Implemented: desktop-session 401/403 refresh-and-retry-once behavior
+- Implemented: Granola client API contract (`POST /v1/get-document-transcript` with `document_id`)
 - Implemented: `meeting-agent auth-check <granola_link>` for real connectivity validation
 
 1. Implement `retrieval.py` interface:
@@ -335,7 +339,13 @@ Status notes:
    - write success/failure
    - quarantine action
 
-## 14) CLI Command Wiring (`Not Started`)
+## 14) CLI Command Wiring (`In Progress`)
+
+Status notes:
+- Implemented: `meeting-agent init`
+- Implemented: `meeting-agent auth-import`
+- Implemented: `meeting-agent auth-check <granola_link>`
+- Pending: interactive default flow, `process`, `process --new`, `open --latest`, model management commands
 
 1. Implement commands in `cli.py`:
    - `meeting-agent` (interactive default)

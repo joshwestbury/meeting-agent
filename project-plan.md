@@ -37,6 +37,8 @@ Batch mode (`meeting-agent process --new`) remains in scope for processing unpro
 |---|---|
 | `meeting-agent` | Start interactive flow (prompt link, prompt folder, preview, confirm, write) |
 | `meeting-agent init` | One-time setup for vault root, staging path, and auth config |
+| `meeting-agent auth-import` | Import Granola desktop-session credentials into keychain |
+| `meeting-agent auth-check <granola_link>` | Verify real Granola connectivity using configured auth mode |
 | `meeting-agent process <granola_link>` | One-shot processing from link; prompts for missing options |
 | `meeting-agent process --new` | Process all unprocessed/changed staged transcripts |
 | `meeting-agent open --latest` | Open last successfully written note |
@@ -64,7 +66,7 @@ Persist in `~/.config/meeting-agent/config.toml`:
 - `staging_root` (absolute path; default `~/granola-export`)
 - `default_folder` (optional vault-relative folder)
 - `timezone` (IANA name or `local`)
-- `auth_mode` (`token`, `cookie`, or `manual_export`)
+- `auth_mode` (`token`, `cookie`, `manual_export`, or `desktop_session`)
 - `llm_mode` (`local`, `none`; default `local`)
 - `llm_runtime` (`llama.cpp`; v1)
 - `llm_model` (default `LiquidAI/LFM2-2.6B-Transcript-GGUF`)
@@ -111,6 +113,7 @@ Use Granola meeting link as the primary v1 ingestion trigger, with local staging
 
 Accepted input formats:
 - `https://notes.granola.ai/t/<meeting-uuid>-<suffix>`
+- `https://notes.granola.ai/d/<meeting-uuid>`
 - Future-safe: URL with query params/fragments should still parse base meeting ID.
 
 Selection behavior:
@@ -269,6 +272,18 @@ For `meeting-agent` and `process <granola_link>`:
 4. Persist staged transcript at `~/granola-export/transcripts/<meeting_id>.txt`.
 5. Continue to formatting/routing/write pipeline.
 
+### 4.1.1 API contract (implemented)
+
+For remote transcript retrieval, v1 uses Granola-style client API calls:
+1. `POST https://api.granola.ai/v1/get-document-transcript`
+2. Body: `{"document_id":"<meeting_uuid>"}`
+3. Authorization: `Bearer <access_token>`
+4. Include client headers (`X-Client-Version`, `User-Agent`, etc.) for compatibility.
+
+Expected transcript response shape:
+1. Array of transcript segments (`[{ text, source, start_timestamp, end_timestamp, ... }]`)
+2. Local parser concatenates segment `text` into normalized transcript text.
+
 ### 4.2 Retrieval error categories
 
 Must map failures to explicit user-facing errors:
@@ -277,6 +292,23 @@ Must map failures to explicit user-facing errors:
 - `RATE_LIMITED`
 - `NETWORK_ERROR`
 - `PARSE_ERROR` (payload structure unexpected)
+
+### 4.2.1 Desktop-session auth mode
+
+`desktop_session` mode uses:
+1. `meeting-agent auth-import` to import desktop session credentials from local Granola app files into OS keychain.
+2. Keychain-stored access token for API requests.
+3. Automatic refresh-token exchange (`api.workos.com`) and one retry on 401/403.
+4. Default credential file discovery is platform-specific:
+   - macOS: `~/Library/Application Support/Granola/supabase.json`
+   - Windows: `%APPDATA%/Granola/supabase.json`
+   - Linux: `~/.config/granola/supabase.json`
+   - Optional override via `meeting-agent auth-import --session-path <path>`
+
+`meeting-agent auth-check <granola_link>` must support remote auth modes:
+- `token`
+- `cookie`
+- `desktop_session`
 
 ### 4.3 CLI options
 
@@ -475,6 +507,7 @@ v1 is done when:
 11. Resolved output path is always inside `vault_root`.
 12. `meeting-agent models doctor` reports actionable status for runtime/model readiness.
 13. Default local model uses `LiquidAI/LFM2-2.6B-Transcript-GGUF`, and user can opt into `LiquidAI/LFM2-24B-A2B-GGUF`.
+14. `meeting-agent auth-import` + `meeting-agent auth-check <granola_link>` can validate real Granola connectivity for `desktop_session` mode.
 
 ---
 
