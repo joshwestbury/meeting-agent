@@ -87,6 +87,10 @@ Model-config extension (new, pending):
 2. Extend startup validator:
    - if `llm_mode = local`, verify runtime/model settings are present.
 
+Auth extension (implemented):
+1. Added `desktop_session` auth mode for Granola desktop-session credential reuse.
+2. Added `meeting-agent auth-import` to import desktop-session credentials into keychain.
+
 ## 3) Error Taxonomy and Exit Codes (`In Progress`)
 
 Status notes:
@@ -127,6 +131,11 @@ Status notes:
 
 ## 5) Retrieval Layer (`Completed`)
 
+Status notes:
+- Implemented: remote auth for `token`, `cookie`, and `desktop_session`
+- Implemented: desktop-session 401/403 refresh-and-retry-once behavior
+- Implemented: `meeting-agent auth-check <granola_link>` for real connectivity validation
+
 1. Implement `retrieval.py` interface:
    - `retrieve_transcript(source_url, config) -> RetrievalResult`
 2. `RetrievalResult` contains:
@@ -140,6 +149,7 @@ Status notes:
 3. Implement auth mode handlers:
    - `token`: header-based auth
    - `cookie`: session cookie-based request
+   - `desktop_session`: desktop credential import + keychain-backed access token with refresh flow
    - `manual_export`: deterministic failure with actionable guidance unless local exported data exists
 4. Add retry policy for transient failures.
 5. Translate transport/API failures into retrieval error codes.

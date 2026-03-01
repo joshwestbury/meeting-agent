@@ -16,7 +16,9 @@ from meeting_agent.retrieval import (
 )
 
 
-def _base_config(tmp_path: Path, auth_mode: Literal["token", "cookie", "manual_export"] = "token") -> AppConfig:
+def _base_config(
+    tmp_path: Path, auth_mode: Literal["token", "cookie", "manual_export", "desktop_session"] = "token"
+) -> AppConfig:
     vault_root = tmp_path / "vault"
     vault_root.mkdir(exist_ok=True)
     return AppConfig(
@@ -33,6 +35,10 @@ def test_retrieve_transcript_success_token_mode(tmp_path: Path, monkeypatch: pyt
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["Authorization"] == "Bearer secret"
+        assert request.method == "POST"
+        assert request.url.host == "api.granola.ai"
+        assert request.url.path == "/v1/get-document-transcript"
+        assert request.read().decode("utf-8").find("29250e01-0751-4e02-9b24-f6d06f878b04") != -1
         return httpx.Response(
             200,
             json={
@@ -57,6 +63,36 @@ def test_retrieve_transcript_success_token_mode(tmp_path: Path, monkeypatch: pyt
     assert result.title == "Weekly Sync"
     assert result.attendees == ["Alex", "Jamie"]
     assert result.transcript_text == "hello world"
+    client.close()
+
+
+def test_retrieve_transcript_uses_uuid_document_id_for_t_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MEETING_AGENT_TOKEN", "secret")
+    config = _base_config(tmp_path, "token")
+    called_document_ids: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.read().decode("utf-8")
+        if "29250e01-0751-4e02-9b24-f6d06f878b04-00b881l8" in body:
+            called_document_ids.append("raw_token")
+            return httpx.Response(404, json={"error": "not found"})
+        if "29250e01-0751-4e02-9b24-f6d06f878b04" in body:
+            called_document_ids.append("uuid")
+            return httpx.Response(200, json={"transcript_text": "ok"})
+        return httpx.Response(500, json={"error": "unexpected"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = retrieve_transcript(
+        "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04-00b881l8",
+        config,
+        client=client,
+        max_retries=0,
+    )
+
+    assert result.transcript_text == "ok"
+    assert called_document_ids == ["uuid"]
     client.close()
 
 
@@ -219,23 +255,28 @@ def test_retrieve_transcript_parse_error_on_invalid_json(tmp_path: Path, monkeyp
     client.close()
 
 
-def test_retrieve_transcript_parse_error_on_non_object_payload(
+def test_retrieve_transcript_accepts_array_payload_as_segments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("MEETING_AGENT_TOKEN", "secret")
     config = _base_config(tmp_path, "token")
 
     def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=["not", "an", "object"])
+        return httpx.Response(
+            200,
+            json=[
+                {"text": "first line"},
+                {"text": "second line"},
+            ],
+        )
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    with pytest.raises(RetrievalError) as exc:
-        retrieve_transcript(
-            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            config,
-            client=client,
-        )
-    assert exc.value.code == PARSE_ERROR
+    result = retrieve_transcript(
+        "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+        config,
+        client=client,
+    )
+    assert result.transcript_text == "first line\nsecond line"
     client.close()
 
 
@@ -406,3 +447,57 @@ def test_retrieve_transcript_cookie_mode_unreadable_file_is_auth_required(
         )
     assert exc.value.code == AUTH_REQUIRED
     assert "Could not read cookie file" in str(exc.value)
+
+
+def test_retrieve_transcript_desktop_session_uses_bearer_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _base_config(tmp_path, "desktop_session")
+    monkeypatch.setattr("meeting_agent.retrieval.get_desktop_session_access_token", lambda: "desktop-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer desktop-token"
+        return httpx.Response(200, json={"transcript_text": "desktop transcript"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = retrieve_transcript(
+        "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+        config,
+        client=client,
+    )
+    assert result.transcript_text == "desktop transcript"
+    client.close()
+
+
+def test_retrieve_transcript_desktop_session_refreshes_once_on_401(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _base_config(tmp_path, "desktop_session")
+    monkeypatch.setattr("meeting_agent.retrieval.get_desktop_session_access_token", lambda: "stale-token")
+
+    class _Creds:
+        access_token = "fresh-token"
+
+    monkeypatch.setattr(
+        "meeting_agent.retrieval.refresh_desktop_session_credentials",
+        lambda client=None: _Creds(),
+    )
+
+    seen_headers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(request.headers.get("Authorization", ""))
+        if len(seen_headers) == 1:
+            return httpx.Response(401, json={"error": "expired"})
+        return httpx.Response(200, json={"transcript_text": "ok"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = retrieve_transcript(
+        "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+        config,
+        client=client,
+        max_retries=0,
+    )
+    assert result.transcript_text == "ok"
+    assert seen_headers == ["Bearer stale-token", "Bearer fresh-token"]
+    client.close()

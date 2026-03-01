@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import typer
 
 from meeting_agent.config import (
@@ -6,7 +8,9 @@ from meeting_agent.config import (
     save_config,
     validate_init_config,
 )
-from meeting_agent.errors import ConfigError
+from meeting_agent.errors import ConfigError, RetrievalError
+from meeting_agent.auth import import_desktop_session_credentials
+from meeting_agent.retrieval import retrieve_transcript
 
 app = typer.Typer(help="Meeting Agent CLI")
 
@@ -14,7 +18,7 @@ app = typer.Typer(help="Meeting Agent CLI")
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
     """Entry point for meeting-agent CLI."""
-    if ctx.invoked_subcommand == "init":
+    if ctx.invoked_subcommand in {"init", "auth-import"}:
         return
 
     try:
@@ -41,12 +45,12 @@ def init_command() -> None:
     default_folder_raw = typer.prompt("Default vault-relative folder", default="", show_default=False)
     timezone = typer.prompt("Timezone", default=default_timezone)
     auth_mode = typer.prompt(
-        "Auth mode (token/cookie/manual_export)",
+        "Auth mode (token/cookie/manual_export/desktop_session)",
         default="manual_export",
     )
     auth_mode = auth_mode.strip()
-    if auth_mode not in {"token", "cookie", "manual_export"}:
-        typer.echo("Auth mode must be one of: token, cookie, manual_export")
+    if auth_mode not in {"token", "cookie", "manual_export", "desktop_session"}:
+        typer.echo("Auth mode must be one of: token, cookie, manual_export, desktop_session")
         raise typer.Exit(code=2)
 
     auth_token_env: str | None = None
@@ -78,3 +82,42 @@ def init_command() -> None:
     path = save_config(config)
     typer.echo(f"Config written: {path}")
     typer.echo("Startup validation passed.")
+
+
+@app.command("auth-import")
+def auth_import_command(
+    session_path: str | None = typer.Option(
+        None,
+        "--session-path",
+        help="Path to Granola desktop session credential file.",
+    )
+) -> None:
+    """Import Granola desktop-session credentials into keychain storage."""
+    source_path = Path(session_path).expanduser() if session_path else None
+    creds = import_desktop_session_credentials(source_path)
+    typer.echo("Desktop-session credentials imported.")
+    typer.echo(f"client_id: {creds.client_id}")
+    typer.echo(f"has_access_token: {bool(creds.access_token)}")
+
+
+@app.command("auth-check")
+def auth_check_command(granola_link: str) -> None:
+    """Validate real Granola connectivity/auth using a meeting link."""
+    config = load_and_validate_startup_config()
+    if config.auth_mode == "manual_export":
+        typer.echo(
+            "auth-check requires remote auth mode (`token` or `cookie`). "
+            "Current config is `manual_export`."
+        )
+        raise typer.Exit(code=2)
+
+    typer.echo("Checking Granola connectivity...")
+    try:
+        result = retrieve_transcript(granola_link, config, max_retries=0)
+    except RetrievalError as exc:
+        typer.echo(f"Granola auth-check failed [{exc.code}]: {exc}")
+        raise typer.Exit(code=2) from exc
+
+    typer.echo("Granola auth-check succeeded.")
+    typer.echo(f"meeting_id: {result.meeting_id}")
+    typer.echo(f"transcript_chars: {len(result.transcript_text)}")

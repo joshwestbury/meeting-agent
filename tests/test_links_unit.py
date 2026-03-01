@@ -22,6 +22,13 @@ def test_parse_granola_link_trims_input_whitespace() -> None:
     assert parsed.source_url == "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04"
 
 
+def test_parse_granola_link_accepts_d_path() -> None:
+    url = "https://notes.granola.ai/d/29250e01-0751-4e02-9b24-f6d06f878b04"
+    parsed = parse_granola_link(url)
+    assert parsed.meeting_id == "29250e01-0751-4e02-9b24-f6d06f878b04"
+    assert parsed.raw_token == "29250e01-0751-4e02-9b24-f6d06f878b04"
+
+
 @pytest.mark.parametrize(
     "url",
     [

@@ -31,8 +31,8 @@ def parse_granola_link(source_url: str) -> ParsedGranolaLink:
         raise LinkValidationError("Granola link must use notes.granola.ai")
 
     path_parts = [part for part in parsed.path.split("/") if part]
-    if len(path_parts) != 2 or path_parts[0] != "t":
-        raise LinkValidationError("Granola link path must be /t/<meeting-token>")
+    if len(path_parts) != 2 or path_parts[0] not in {"t", "d"}:
+        raise LinkValidationError("Granola link path must be /t/<meeting-token> or /d/<meeting-id>")
 
     raw_token = path_parts[1]
     match = _MEETING_TOKEN_RE.fullmatch(raw_token)

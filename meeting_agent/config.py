@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from meeting_agent.errors import ConfigError
 
 
-AuthMode = Literal["token", "cookie", "manual_export"]
+AuthMode = Literal["token", "cookie", "manual_export", "desktop_session"]
 
 
 class AppConfig(BaseModel):
@@ -142,6 +142,9 @@ def validate_init_config(config: AppConfig) -> None:
             raise ConfigError("cookie auth_mode requires cookie_file")
         if not config.cookie_file.exists() or not config.cookie_file.is_file():
             raise ConfigError(f"cookie_file not found: {config.cookie_file}")
+    elif config.auth_mode == "desktop_session":
+        # Desktop-session mode validates connectivity at auth-check/process time.
+        return
 
 
 def load_and_validate_startup_config(path: Path | None = None) -> AppConfig:
