@@ -179,3 +179,33 @@ def test_save_config_replace_failure_preserves_existing_file(
         save_config(config, config_path)
 
     assert config_path.read_text(encoding="utf-8") == "original-content\n"
+
+
+def test_validate_local_llm_requires_non_empty_model(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    vault_root.mkdir()
+
+    config = AppConfig(
+        vault_root=vault_root,
+        staging_root=tmp_path / "staging",
+        auth_mode="manual_export",
+        llm_mode="local",
+        llm_model="   ",
+    )
+    with pytest.raises(ConfigError, match="llm_model"):
+        validate_init_config(config)
+
+
+def test_model_cache_dir_default_expands_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    vault_root = home / "vault"
+    vault_root.mkdir()
+    config = AppConfig(
+        vault_root=vault_root,
+        staging_root=home / "staging",
+        auth_mode="manual_export",
+    )
+    assert config.model_cache_dir == home / ".cache" / "meeting-agent" / "models"

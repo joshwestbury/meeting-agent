@@ -10,6 +10,8 @@ from meeting_agent.errors import ConfigError
 
 
 AuthMode = Literal["token", "cookie", "manual_export", "desktop_session"]
+LlmMode = Literal["local", "none"]
+LlmRuntime = Literal["llama.cpp"]
 
 
 class AppConfig(BaseModel):
@@ -22,8 +24,16 @@ class AppConfig(BaseModel):
     auth_mode: AuthMode
     auth_token_env: str | None = Field(default="MEETING_AGENT_TOKEN")
     cookie_file: Path | None = None
+    llm_mode: LlmMode = "local"
+    llm_runtime: LlmRuntime = "llama.cpp"
+    llm_model: str = "LiquidAI/LFM2-2.6B-Transcript-GGUF"
+    llm_model_variant: str = "Q4_K_M"
+    llm_server_url: str = "http://127.0.0.1:8080"
+    model_cache_dir: Path = Field(
+        default_factory=lambda: Path.home() / ".cache" / "meeting-agent" / "models"
+    )
 
-    @field_validator("vault_root", "staging_root", "cookie_file", mode="before")
+    @field_validator("vault_root", "staging_root", "cookie_file", "model_cache_dir", mode="before")
     @classmethod
     def _expand_path(cls, value: object) -> object:
         if value is None:
@@ -59,6 +69,12 @@ def _to_toml(config: AppConfig) -> str:
             f"auth_mode = {_quote(config.auth_mode)}",
             f"auth_token_env = {_quote(config.auth_token_env or '')}",
             f"cookie_file = {_quote(str(config.cookie_file) if config.cookie_file else '')}",
+            f"llm_mode = {_quote(config.llm_mode)}",
+            f"llm_runtime = {_quote(config.llm_runtime)}",
+            f"llm_model = {_quote(config.llm_model)}",
+            f"llm_model_variant = {_quote(config.llm_model_variant)}",
+            f"llm_server_url = {_quote(config.llm_server_url)}",
+            f"model_cache_dir = {_quote(str(config.model_cache_dir))}",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -109,6 +125,12 @@ def load_config(path: Path | None = None) -> AppConfig:
             auth_mode=raw["auth_mode"],
             auth_token_env=auth_token_env,
             cookie_file=cookie_file,
+            llm_mode=raw.get("llm_mode", "local"),
+            llm_runtime=raw.get("llm_runtime", "llama.cpp"),
+            llm_model=raw.get("llm_model", "LiquidAI/LFM2-2.6B-Transcript-GGUF"),
+            llm_model_variant=raw.get("llm_model_variant", "Q4_K_M"),
+            llm_server_url=raw.get("llm_server_url", "http://127.0.0.1:8080"),
+            model_cache_dir=raw.get("model_cache_dir", "~/.cache/meeting-agent/models"),
         )
     except KeyError as exc:
         raise ConfigError(f"Missing required config key: {exc.args[0]}") from exc
@@ -144,7 +166,17 @@ def validate_init_config(config: AppConfig) -> None:
             raise ConfigError(f"cookie_file not found: {config.cookie_file}")
     elif config.auth_mode == "desktop_session":
         # Desktop-session mode validates connectivity at auth-check/process time.
-        return
+        pass
+
+    if config.llm_mode == "local":
+        if not config.llm_runtime:
+            raise ConfigError("local llm_mode requires llm_runtime")
+        if not config.llm_model.strip():
+            raise ConfigError("local llm_mode requires llm_model")
+        if not config.llm_model_variant.strip():
+            raise ConfigError("local llm_mode requires llm_model_variant")
+        if not config.llm_server_url.strip():
+            raise ConfigError("local llm_mode requires llm_server_url")
 
 
 def load_and_validate_startup_config(path: Path | None = None) -> AppConfig:

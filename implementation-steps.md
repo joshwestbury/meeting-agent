@@ -4,9 +4,9 @@ This document is the execution playbook for implementing everything in `project-
 It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
-- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9
+- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9, 9.1, 10
 - In Progress: Steps 3, 14, 16
-- Not Started: Steps 10, 11, 12, 13, 15, 17, 18, 19
+- Not Started: Steps 11, 12, 13, 15, 17, 18, 19
 
 Status legend:
 - `Completed`: implemented and covered by passing tests
@@ -250,7 +250,14 @@ Status notes:
    - call local `llama.cpp` server at configured `llm_server_url`
    - parse model JSON output and pass through schema validators
 
-## 9.1) Local Model Runtime and Downloads (`Not Started`)
+## 9.1) Local Model Runtime and Downloads (`Completed`)
+
+Status notes:
+- Implemented: `meeting-agent models pull` with cache path resolution and download/skip behavior
+- Implemented: `meeting-agent models doctor` runtime/model/server checks with actionable guidance
+- Implemented: `meeting-agent models list` for installed GGUF model discovery
+- Implemented: disk-size guidance for default 2.6B model and optional 24B model
+- Implemented: unit and CLI tests for pull/doctor/list paths
 
 1. Implement `meeting-agent models pull`:
    - default model: `LiquidAI/LFM2-2.6B-Transcript-GGUF` + configured quant variant
@@ -269,7 +276,15 @@ Status notes:
    - pull command happy path (mocked)
    - doctor command status reporting
 
-## 10) Note Rendering and Frontmatter (`Not Started`)
+## 10) Note Rendering and Frontmatter (`Completed`)
+
+Status notes:
+- Implemented: markdown renderer with required frontmatter contract
+- Implemented: required body sections and optional Decisions/Open Questions sections
+- Implemented: transcript source link inclusion
+- Implemented: filename generation with time-based fallback and sanitization
+- Implemented: atomic note writer helper
+- Implemented: renderer and filename unit tests
 
 1. Implement markdown renderer in `writer.py`:
    - frontmatter + required sections

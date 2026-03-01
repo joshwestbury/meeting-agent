@@ -2,6 +2,7 @@ from pathlib import Path
 
 import typer
 
+from meeting_agent import models
 from meeting_agent.config import (
     AppConfig,
     load_and_validate_startup_config,
@@ -13,6 +14,8 @@ from meeting_agent.auth import import_desktop_session_credentials
 from meeting_agent.retrieval import retrieve_transcript
 
 app = typer.Typer(help="Meeting Agent CLI")
+models_app = typer.Typer(help="Local model management commands")
+app.add_typer(models_app, name="models")
 
 
 @app.callback(invoke_without_command=True)
@@ -106,7 +109,7 @@ def auth_check_command(granola_link: str) -> None:
     config = load_and_validate_startup_config()
     if config.auth_mode == "manual_export":
         typer.echo(
-            "auth-check requires remote auth mode (`token` or `cookie`). "
+            "auth-check requires remote auth mode (`token`, `cookie`, or `desktop_session`). "
             "Current config is `manual_export`."
         )
         raise typer.Exit(code=2)
@@ -121,3 +124,86 @@ def auth_check_command(granola_link: str) -> None:
     typer.echo("Granola auth-check succeeded.")
     typer.echo(f"meeting_id: {result.meeting_id}")
     typer.echo(f"transcript_chars: {len(result.transcript_text)}")
+
+
+@models_app.command("pull")
+def models_pull_command(
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Model repo id (for example LiquidAI/LFM2-2.6B-Transcript-GGUF).",
+    ),
+    variant: str | None = typer.Option(None, "--variant", help="Model quantization variant."),
+    force: bool = typer.Option(False, "--force", help="Redownload even if file exists."),
+) -> None:
+    """Download configured local model into cache."""
+    config = load_and_validate_startup_config()
+    repo_id = model or config.llm_model
+    resolved_variant = variant or config.llm_model_variant
+    cache_dir = config.model_cache_dir
+    guidance = models.model_size_guidance(repo_id)
+
+    typer.echo(f"Pulling model: {repo_id} ({resolved_variant})")
+    typer.echo(f"Cache directory: {cache_dir}")
+    typer.echo(f"Disk guidance: {guidance}")
+
+    result = models.pull_model(
+        repo_id=repo_id,
+        variant=resolved_variant,
+        model_cache_dir=cache_dir,
+        force=force,
+    )
+    if result.downloaded:
+        typer.echo(f"Downloaded: {result.output_path}")
+    else:
+        typer.echo(f"Already present: {result.output_path}")
+
+
+@models_app.command("doctor")
+def models_doctor_command(
+    model: str | None = typer.Option(None, "--model", help="Model repo id override."),
+    variant: str | None = typer.Option(None, "--variant", help="Model variant override."),
+) -> None:
+    """Validate local runtime, downloaded model presence, and server reachability."""
+    config = load_and_validate_startup_config()
+    repo_id = model or config.llm_model
+    resolved_variant = variant or config.llm_model_variant
+
+    report = models.run_models_doctor(
+        model_cache_dir=config.model_cache_dir,
+        repo_id=repo_id,
+        variant=resolved_variant,
+        server_url=config.llm_server_url,
+    )
+
+    typer.echo("Model doctor report:")
+    typer.echo(f"- runtime_installed: {report.runtime_installed}")
+    if report.runtime_path:
+        typer.echo(f"- runtime_path: {report.runtime_path}")
+    typer.echo(f"- model_present: {report.model_present}")
+    typer.echo(f"- model_path: {report.model_path}")
+    typer.echo(f"- server_reachable: {report.server_reachable}")
+
+    if not report.runtime_installed:
+        typer.echo("Action: install llama.cpp and ensure `llama-server` is on PATH.")
+    if not report.model_present:
+        typer.echo("Action: run `meeting-agent models pull` to download the configured model.")
+    if not report.server_reachable:
+        typer.echo("Action: start local server at configured llm_server_url.")
+
+
+@models_app.command("list")
+def models_list_command() -> None:
+    """List installed local GGUF models and active config target."""
+    config = load_and_validate_startup_config()
+    installed = models.list_installed_models(config.model_cache_dir)
+
+    typer.echo(f"Active model: {config.llm_model} ({config.llm_model_variant})")
+    typer.echo(f"Model cache: {config.model_cache_dir}")
+    if not installed:
+        typer.echo("Installed models: none")
+        return
+
+    typer.echo("Installed models:")
+    for path in installed:
+        typer.echo(f"- {path}")
