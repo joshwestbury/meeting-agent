@@ -4,9 +4,9 @@ This document is the execution playbook for implementing everything in `project-
 It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
-- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9, 9.1, 10
+- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9, 9.1, 10, 11, 12
 - In Progress: Steps 3, 14, 16
-- Not Started: Steps 11, 12, 13, 15, 17, 18, 19
+- Not Started: Steps 13, 15, 17, 18, 19
 
 Status legend:
 - `Completed`: implemented and covered by passing tests
@@ -303,7 +303,14 @@ Status notes:
    - collision fallback: `YYYY-MM-DD HHmm - <Title>.md`
 7. Sanitize filename and enforce safe characters.
 
-## 11) Write Pipeline and Collision Handling (`Not Started`)
+## 11) Write Pipeline and Collision Handling (`Completed`)
+
+Status notes:
+- Implemented: output path resolution (`vault_root / folder / filename`) with root-boundary enforcement
+- Implemented: collision policy flow (`update` by `granola_id`, `skip` by `transcript_hash`, quarantine on collision)
+- Implemented: atomic note writes with write-failure quarantine fallback
+- Implemented: state updates for processed/quarantined outcomes under lock
+- Implemented: unit tests for new, update, skip, collision, and write-failure paths
 
 1. Compute output path:
    - `vault_root / validated_folder / filename`
@@ -319,7 +326,14 @@ Status notes:
    - do not mark state as processed
    - quarantine diagnostic payload
 
-## 12) Quarantine and Diagnostics (`Not Started`)
+## 12) Quarantine and Diagnostics (`Completed`)
+
+Status notes:
+- Implemented: quarantine artifact writer at `~/granola-export/failed-notes/`
+- Implemented: artifact payload includes source URL/meeting ID/hash/source key/folder/output/error
+- Implemented: optional raw payload embedding for diagnostics
+- Implemented: best-effort wrapper that never crashes caller error paths
+- Implemented: unit tests for artifact content and best-effort behavior
 
 1. Implement `quarantine.py` artifact writer:
    - location: `~/granola-export/failed-notes/`

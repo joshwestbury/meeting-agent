@@ -29,3 +29,7 @@ class StateError(MeetingAgentError):
 
 class SchemaValidationError(MeetingAgentError):
     """Raised when note schema payloads are invalid."""
+
+
+class CollisionError(MeetingAgentError):
+    """Raised when note write would violate collision policy."""
