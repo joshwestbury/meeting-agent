@@ -4,9 +4,9 @@ This document is the execution playbook for implementing everything in `project-
 It is ordered for lowest risk and fastest feedback.
 
 Progress snapshot (updated: 2026-02-28):
-- Completed: Steps 1, 2, 4, 5, 6, 7, 8, 9, 9.1, 10, 11, 12, 13, 14, 15, 16, 17
-- In Progress: Steps 3
-- Not Started: Steps 18, 19
+- Completed: Steps 1, 2, 3, 4, 5, 6, 7, 8, 9, 9.1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+- In Progress: None
+- Not Started: None
 
 Status legend:
 - `Completed`: implemented and covered by passing tests
@@ -77,7 +77,7 @@ tests/
 5. Persist config atomically (`config.toml.tmp` then rename).
 6. Add startup validator used by all commands.
 
-Model-config extension (new, pending):
+Model-config extension (implemented):
 1. Add config keys:
    - `llm_mode` (`local`, `none`)
    - `llm_runtime` (`llama.cpp`)
@@ -92,14 +92,16 @@ Auth extension (implemented):
 1. Added `desktop_session` auth mode for Granola desktop-session credential reuse.
 2. Added `meeting-agent auth-import` to import desktop-session credentials into keychain.
 
-## 3) Error Taxonomy and Exit Codes (`In Progress`)
+## 3) Error Taxonomy and Exit Codes (`Completed`)
 
 Status notes:
 - Implemented: `ConfigError`, `LinkValidationError`, `RetrievalError`, `FolderValidationError`
 - Implemented: `SchemaValidationError`
+- Implemented: `CollisionError`
 - Implemented: retrieval error codes (`AUTH_REQUIRED`, `NOT_FOUND`, `RATE_LIMITED`, `NETWORK_ERROR`, `PARSE_ERROR`)
-- Pending: `CollisionError`
-- Pending: centralized CLI exit-code mapping and consistent error renderer
+- Implemented: centralized CLI exit-code mapping
+- Implemented: consistent error renderer used across CLI paths
+- Implemented: unit tests for exit-code mapping and error rendering
 
 1. Define typed errors in `errors.py`:
    - `ConfigError`
@@ -381,7 +383,7 @@ Status notes:
 Status notes:
 - Implemented: `meeting-agent` interactive default flow (prompt link/folder, preview, confirm, write)
 - Implemented: `meeting-agent process <granola_link>` with `--folder`, `--yes`, `--dry-run`, `--no-llm`, `--force-sensitive`
-- Implemented: `meeting-agent process --new` command wiring with explicit deferred message (Step 15 owns execution logic)
+- Implemented: full `meeting-agent process --new` execution flow
 - Implemented: `meeting-agent open --latest` with state-based latest note resolution
 - Implemented: model management commands (`models pull`, `models doctor`, `models list`)
 - Implemented: shared core processing path for interactive and non-interactive modes
@@ -487,7 +489,11 @@ Status notes:
 8. Structured logs include required fields.
 9. Quarantine artifacts are created for failures.
 
-## 18) Suggested Build Order by Milestone (`Not Started`)
+## 18) Suggested Build Order by Milestone (`Completed`)
+
+Status notes:
+- Milestones A-F were used as the practical build sequence for implementation.
+- Implementation status now tracks all milestone outcomes through completed steps.
 
 1. Milestone A: Config + CLI skeleton + link parser.
 2. Milestone B: Retrieval + staging + normalization + state.
@@ -496,7 +502,13 @@ Status notes:
 5. Milestone E: batch mode + logging + quarantine hardening.
 6. Milestone F: full tests + acceptance run on real meetings.
 
-## 19) Definition of Done (`Not Started`)
+## 19) Definition of Done (`Completed`)
+
+Status notes:
+- Completed via passing acceptance checklist tests and CLI integration coverage.
+- Interactive flow from link to vault note is validated in acceptance tests.
+- Failure paths emit typed, actionable errors with stable exit codes and quarantine/log diagnostics.
+- Documentation has been updated to reflect current command/config behavior.
 
 1. All acceptance checklist items pass.
 2. A full interactive run from Granola link to vault note is successful.

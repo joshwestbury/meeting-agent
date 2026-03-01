@@ -46,7 +46,7 @@ def test_process_new_continues_after_item_failure(tmp_path: Path, monkeypatch) -
 
     result = runner.invoke(app, ["process", "--new", "--folder", "Inbox/Meetings/", "--yes", "--no-llm"])
 
-    assert result.exit_code == 2
+    assert result.exit_code == 1
     assert "Batch summary:" in result.output
     assert "- processed: 1" in result.output
     assert "- failed: 1" in result.output

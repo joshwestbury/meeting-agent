@@ -21,6 +21,7 @@ from meeting_agent.errors import (
     SchemaValidationError,
     StateError,
 )
+from meeting_agent.exit_codes import exit_code_for_error, render_error_message
 from meeting_agent.llm import (
     build_no_llm_payload,
     detect_sensitive,
@@ -48,10 +49,9 @@ def main(ctx: typer.Context) -> None:
     try:
         config = load_and_validate_startup_config()
     except ConfigError as exc:
-        typer.echo(
-            f"Configuration error: {exc}\nRun `meeting-agent init` to create/update config."
-        )
-        raise typer.Exit(code=2) from exc
+        typer.echo(render_error_message(exc, context="Configuration error"))
+        typer.echo("Run `meeting-agent init` to create/update config.")
+        raise typer.Exit(code=exit_code_for_error(exc)) from exc
 
     if ctx.invoked_subcommand is None:
         _interactive_default_flow(config)
@@ -100,8 +100,8 @@ def init_command() -> None:
     try:
         validate_init_config(config)
     except ConfigError as exc:
-        typer.echo(f"Config validation failed: {exc}")
-        raise typer.Exit(code=2) from exc
+        typer.echo(render_error_message(exc, context="Config validation failed"))
+        raise typer.Exit(code=exit_code_for_error(exc)) from exc
 
     path = save_config(config)
     typer.echo(f"Config written: {path}")
@@ -139,8 +139,8 @@ def auth_check_command(granola_link: str) -> None:
     try:
         result = retrieve_transcript(granola_link, config, max_retries=0)
     except RetrievalError as exc:
-        typer.echo(f"Granola auth-check failed [{exc.code}]: {exc}")
-        raise typer.Exit(code=2) from exc
+        typer.echo(render_error_message(exc, context="Granola auth-check failed"))
+        raise typer.Exit(code=exit_code_for_error(exc)) from exc
 
     typer.echo("Granola auth-check succeeded.")
     typer.echo(f"meeting_id: {result.meeting_id}")
@@ -178,7 +178,7 @@ def process_command(
 
     if not granola_link:
         typer.echo("A Granola link is required unless --new is used.")
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=3)
 
     folder_choice = _resolve_folder_choice(config, folder)
     exit_code = _run_single_process(
@@ -202,24 +202,24 @@ def open_command(
     """Open the latest processed note from state."""
     if not latest:
         typer.echo("Only `meeting-agent open --latest` is supported.")
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=3)
 
     entries = load_state()
     candidate = _select_latest_processed(entries)
     if candidate is None:
         typer.echo("No processed notes found in state.")
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=21)
 
     output_path = Path(candidate.output_path)
     if not output_path.exists():
         typer.echo(f"Latest note path no longer exists: {output_path}")
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=21)
 
     try:
         subprocess.run(["open", str(output_path)], check=True)
     except (OSError, subprocess.CalledProcessError):
         typer.echo(f"Unable to open note automatically. Path: {output_path}")
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=23)
 
     typer.echo(f"Opened: {output_path}")
 
@@ -360,8 +360,8 @@ def _run_single_process(
             action="retrieval_failure",
             error=f"[{exc.code}] {exc}",
         )
-        typer.echo(f"Retrieval failed [{exc.code}]: {exc}")
-        return 2
+        typer.echo(render_error_message(exc, context="Retrieval failed"))
+        return exit_code_for_error(exc)
 
     normalized_text = normalize_transcript_text(retrieval.transcript_text)
     transcript_hash = compute_transcript_hash(normalized_text)
@@ -408,8 +408,8 @@ def _run_single_process(
             folder_choice=folder_choice,
             error=str(exc),
         )
-        typer.echo(f"Schema validation failed: {exc}")
-        return 2
+        typer.echo(render_error_message(exc, context="Schema validation failed"))
+        return exit_code_for_error(exc)
 
     filename = build_note_filename(
         meeting_date=payload.meeting_date,
@@ -429,8 +429,8 @@ def _run_single_process(
             folder_reason=reason,
             error=str(exc),
         )
-        typer.echo(f"Folder validation failed: {exc}")
-        return 2
+        typer.echo(render_error_message(exc, context="Folder validation failed"))
+        return exit_code_for_error(exc)
 
     if dry_run:
         typer.echo("Dry run preview:")
@@ -507,8 +507,8 @@ def _run_single_process(
             output_path=str(output_path),
             error=str(exc),
         )
-        typer.echo(f"Write failed: {exc}")
-        return 2
+        typer.echo(render_error_message(exc, context="Write failed"))
+        return exit_code_for_error(exc)
 
     log_event(
         command=command_name,
@@ -528,7 +528,7 @@ def _run_single_process(
         typer.echo(f"Skipped duplicate transcript. Existing note: {result.output_path}")
         return 0
     typer.echo(f"Quarantined due to collision. Artifact: {result.quarantine_path}")
-    return 2
+    return 6
 
 
 def _resolve_meeting_date(started_at: str | None) -> str:
@@ -602,7 +602,7 @@ def _run_batch_process_new(
             normalized = normalize_transcript_text(transcript_file.read_text(encoding="utf-8"))
         except OSError as exc:
             counters = counters.bump("failed")
-            typer.echo(f"[failed] {transcript_file.name}: {exc}")
+            typer.echo(render_error_message(exc, context=f"[failed] {transcript_file.name}"))
             log_event(
                 command=command_name,
                 transcript_path=str(transcript_file),
@@ -650,7 +650,9 @@ def _run_batch_process_new(
                 )
         except SchemaValidationError as exc:
             counters = counters.bump("failed")
-            typer.echo(f"[failed] {transcript_file.name}: schema validation failed: {exc}")
+            typer.echo(
+                render_error_message(exc, context=f"[failed] {transcript_file.name} schema validation failed")
+            )
             log_event(
                 command=command_name,
                 source_key=source_key,
@@ -691,7 +693,7 @@ def _run_batch_process_new(
             )
         except (CollisionError, FolderValidationError, StateError) as exc:
             counters = counters.bump("failed")
-            typer.echo(f"[failed] {transcript_file.name}: {exc}")
+            typer.echo(render_error_message(exc, context=f"[failed] {transcript_file.name}"))
             log_event(
                 command=command_name,
                 source_key=source_key,
@@ -723,7 +725,7 @@ def _run_batch_process_new(
     typer.echo(f"- quarantined: {counters.quarantined}")
     typer.echo(f"- failed: {counters.failed}")
 
-    return 2 if counters.failed > 0 else 0
+    return 1 if counters.failed > 0 else 0
 
 
 def _batch_should_skip(config: AppConfig, transcript_file: Path, transcript_hash: str) -> bool:

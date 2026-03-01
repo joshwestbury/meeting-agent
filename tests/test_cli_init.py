@@ -72,7 +72,7 @@ def test_cli_startup_guard_without_config_shows_guidance(tmp_path: Path, monkeyp
     result = runner.invoke(app, [])
 
     assert result.exit_code == 2
-    assert "Configuration error:" in result.output
+    assert "Configuration error [config]:" in result.output
     assert "Run `meeting-agent init`" in result.output
 
 

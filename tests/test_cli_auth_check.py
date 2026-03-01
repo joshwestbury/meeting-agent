@@ -66,5 +66,5 @@ def test_auth_check_surfaces_retrieval_error_code(tmp_path: Path, monkeypatch) -
 
     result = runner.invoke(app, ["auth-check", "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04"])
 
-    assert result.exit_code == 2
-    assert "Granola auth-check failed [AUTH_REQUIRED]" in result.output
+    assert result.exit_code == 20
+    assert "Granola auth-check failed [retrieval.auth_required]" in result.output
