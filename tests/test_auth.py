@@ -1,14 +1,17 @@
 from pathlib import Path
 
+import httpx
 import pytest
 
 from meeting_agent.auth import (
     DesktopSessionCredentials,
+    get_desktop_session_access_token,
     get_default_desktop_session_path,
     import_desktop_session_credentials,
     parse_desktop_session_json,
+    refresh_desktop_session_credentials,
 )
-from meeting_agent.errors import ConfigError
+from meeting_agent.errors import ConfigError, RetrievalError
 
 
 def test_parse_desktop_session_json_prefers_workos_tokens() -> None:
@@ -59,3 +62,50 @@ def test_import_desktop_session_credentials_invalid_file_raises(tmp_path: Path) 
 
 def test_get_default_desktop_session_path_is_absolute() -> None:
     assert get_default_desktop_session_path().is_absolute()
+
+
+def test_get_desktop_session_access_token_auto_imports_when_keychain_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("meeting_agent.auth.get_keychain_credentials", lambda: None)
+    monkeypatch.setattr(
+        "meeting_agent.auth.import_desktop_session_credentials",
+        lambda path=None: DesktopSessionCredentials(access_token="fresh", refresh_token="r", client_id="c"),
+    )
+
+    token = get_desktop_session_access_token()
+    assert token == "fresh"
+
+
+def test_get_desktop_session_access_token_raises_when_auto_import_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("meeting_agent.auth.get_keychain_credentials", lambda: None)
+
+    def _raise_import(path=None):
+        raise ConfigError("missing file")
+
+    monkeypatch.setattr("meeting_agent.auth.import_desktop_session_credentials", _raise_import)
+    with pytest.raises(RetrievalError, match="No desktop-session credentials found"):
+        get_desktop_session_access_token()
+
+
+def test_refresh_desktop_session_credentials_auto_imports_on_http_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "meeting_agent.auth.get_keychain_credentials",
+        lambda: DesktopSessionCredentials(access_token="", refresh_token="old-r", client_id="c"),
+    )
+    monkeypatch.setattr(
+        "meeting_agent.auth.import_desktop_session_credentials",
+        lambda path=None: DesktopSessionCredentials(access_token="imported-token", refresh_token="r2", client_id="c"),
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "bad refresh"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    creds = refresh_desktop_session_credentials(client=client)
+    client.close()
+    assert creds.access_token == "imported-token"

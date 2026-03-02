@@ -50,7 +50,10 @@ def generate_note_payload_with_llm(
         raise SchemaValidationError("candidate_folders must not be empty")
 
     llm_output = llm_callable(transcript_text, candidate_folders)
-    note = parse_llm_note_payload(llm_output)
+    note = parse_llm_note_payload(
+        llm_output,
+        default_folder_choice=candidate_folders[0],
+    )
     ensure_folder_choice_candidate(note, candidate_folders)
     validate_note_length(note, max_total_chars=max_total_chars)
     return note
@@ -75,7 +78,10 @@ def generate_note_payload_with_local_runtime(
         server_url=server_url,
         client=client,
     )
-    note = parse_llm_note_payload(llm_output)
+    note = parse_llm_note_payload(
+        llm_output,
+        default_folder_choice=candidate_folders[0],
+    )
     ensure_folder_choice_candidate(note, candidate_folders)
     validate_note_length(note, max_total_chars=max_total_chars)
     return note

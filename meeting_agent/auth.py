@@ -114,14 +114,22 @@ def save_keychain_credentials(creds: DesktopSessionCredentials) -> None:
 def get_desktop_session_access_token() -> str:
     creds = get_keychain_credentials()
     if creds is None:
-        raise RetrievalError(
-            AUTH_REQUIRED,
-            "No desktop-session credentials found. Run `meeting-agent auth-import` first.",
-        )
+        creds = _auto_import_desktop_session_credentials()
+        if creds is None:
+            raise RetrievalError(
+                AUTH_REQUIRED,
+                "No desktop-session credentials found. Run `meeting-agent auth-import` first.",
+            )
     if creds.access_token:
         return creds.access_token
-    refreshed = refresh_desktop_session_credentials()
-    return refreshed.access_token
+    try:
+        refreshed = refresh_desktop_session_credentials()
+        return refreshed.access_token
+    except RetrievalError:
+        imported = _auto_import_desktop_session_credentials()
+        if imported and imported.access_token:
+            return imported.access_token
+        raise
 
 
 def refresh_desktop_session_credentials(
@@ -154,6 +162,9 @@ def refresh_desktop_session_credentials(
                 raise RetrievalError(NETWORK_ERROR, f"Desktop-session token refresh failed: {exc}") from exc
 
             if response.status_code >= 400:
+                imported = _auto_import_desktop_session_credentials()
+                if imported and imported.access_token:
+                    return imported
                 raise RetrievalError(
                     AUTH_REQUIRED,
                     f"Desktop-session token refresh rejected: HTTP {response.status_code}",
@@ -179,6 +190,13 @@ def refresh_desktop_session_credentials(
         finally:
             if created_client:
                 http_client.close()
+
+
+def _auto_import_desktop_session_credentials() -> DesktopSessionCredentials | None:
+    try:
+        return import_desktop_session_credentials()
+    except ConfigError:
+        return None
 
 
 def _extract_embedded_json(value: Any) -> dict[str, Any] | None:

@@ -88,6 +88,7 @@ def test_acceptance_local_mode_uses_llm_path(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path, llm_mode="local"))
     monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", lambda *_args, **_kwargs: _retrieval_result())
+    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_server", lambda _config: None)
     called = {"llm": False}
 
     def _mock_llm(*_args, **_kwargs):
@@ -97,7 +98,7 @@ def test_acceptance_local_mode_uses_llm_path(tmp_path: Path, monkeypatch) -> Non
         return NotePayload.model_validate(
             {
                 "title": "LLM Title",
-                "meeting_date": "2026-03-01",
+                "meeting_date": "2030-01-01",
                 "attendees": [],
                 "client": "",
                 "project": "",
@@ -126,3 +127,6 @@ def test_acceptance_local_mode_uses_llm_path(tmp_path: Path, monkeypatch) -> Non
     assert called["llm"] is True
     notes = list((tmp_path / "vault" / "Inbox" / "Meetings").glob("*.md"))
     assert len(notes) == 1
+    content = notes[0].read_text(encoding="utf-8")
+    assert "meeting_date: '2026-03-01'" in content
+    assert "2030-01-01" not in notes[0].name

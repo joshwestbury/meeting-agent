@@ -66,7 +66,7 @@ def test_parse_llm_note_payload_rejects_invalid_json_string() -> None:
         parse_llm_note_payload(invalid)
 
 
-def test_parse_llm_note_payload_rejects_unknown_fields() -> None:
+def test_parse_llm_note_payload_ignores_unknown_fields() -> None:
     payload = {
         "title": "Weekly Sync",
         "meeting_date": "2026-02-28",
@@ -81,8 +81,8 @@ def test_parse_llm_note_payload_rejects_unknown_fields() -> None:
         "sensitive": False,
         "unexpected": "nope",
     }
-    with pytest.raises(SchemaValidationError):
-        parse_llm_note_payload(payload)
+    note = parse_llm_note_payload(payload)
+    assert note.title == "Weekly Sync"
 
 
 def test_ensure_folder_choice_candidate_rejects_non_candidate() -> None:
@@ -185,3 +185,24 @@ def test_parse_llm_note_payload_coerces_common_model_shape_drift() -> None:
     assert note.action_items == ["next_step: Send pricing"]
     assert note.key_details == ["provisioning_stages: at order product level"]
     assert note.sensitive is False
+
+
+def test_parse_llm_note_payload_unwraps_meeting_note_and_drops_attachments() -> None:
+    note = parse_llm_note_payload(
+        {
+            "meeting_note": {
+                "title": "Integration Kickoff",
+                "summary": "Reviewed architecture.",
+                "action_items": ["Draft API plan"],
+                "key_details": ["Auth via desktop session"],
+            },
+            "attachments": [],
+            "sensitive": False,
+        },
+        default_folder_choice="Inbox/Meetings/",
+        default_meeting_date="2026-02-28",
+    )
+    assert note.title == "Integration Kickoff"
+    assert note.summary == "Reviewed architecture."
+    assert note.folder_choice == "Inbox/Meetings/"
+    assert note.meeting_date == "2026-02-28"

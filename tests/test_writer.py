@@ -45,8 +45,8 @@ def test_build_note_filename_primary_and_time_fallback() -> None:
         started_at="2026-03-01T09:12:00-06:00",
         use_time_fallback=True,
     )
-    assert primary == "2026-03-01 - Weekly Sync.md"
-    assert fallback == "2026-03-01 0912 - Weekly Sync.md"
+    assert primary == "Weekly Sync - 2026-03-01.md"
+    assert fallback == "Weekly Sync - 2026-03-01 0912.md"
 
 
 def test_render_markdown_note_includes_required_frontmatter_and_sections() -> None:

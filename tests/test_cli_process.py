@@ -142,6 +142,107 @@ def test_process_full_writes_full_transcript_section(tmp_path: Path, monkeypatch
     assert "Speaker A: hello" in content
 
 
+def test_process_local_mode_invokes_server_ensure(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    config = _config(tmp_path)
+    config.llm_mode = "local"
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: config)
+
+    def _mock_retrieve(_: str, __: AppConfig, client=None, max_retries: int = 2) -> RetrievalResult:
+        return RetrievalResult(
+            granola_id="g1",
+            meeting_id="29250e01-0751-4e02-9b24-f6d06f878b04",
+            title="Weekly Sync",
+            started_at="2026-03-01T09:12:00-06:00",
+            attendees=[],
+            transcript_text="Speaker A: hello",
+            raw_payload={},
+        )
+
+    monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", _mock_retrieve)
+    called = {"ensure": False}
+
+    def _mock_ensure(_: AppConfig) -> None:
+        called["ensure"] = True
+
+    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_server", _mock_ensure)
+
+    from meeting_agent.note_schema import NotePayload
+
+    monkeypatch.setattr(
+        "meeting_agent.cli.generate_note_payload_with_local_runtime",
+        lambda *_args, **_kwargs: NotePayload.model_validate(
+            {
+                "title": "LLM Title",
+                "meeting_date": "2026-03-01",
+                "attendees": [],
+                "client": "",
+                "project": "",
+                "tags": ["meeting"],
+                "folder_choice": "Inbox/Meetings/",
+                "summary": "Summary",
+                "action_items": [],
+                "key_details": ["detail"],
+                "sensitive": False,
+            }
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+            "--folder",
+            "Inbox/Meetings/",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 0
+    assert called["ensure"] is True
+
+
+def test_process_no_llm_does_not_invoke_server_ensure(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    config = _config(tmp_path)
+    config.llm_mode = "local"
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: config)
+
+    def _mock_retrieve(_: str, __: AppConfig, client=None, max_retries: int = 2) -> RetrievalResult:
+        return RetrievalResult(
+            granola_id="g1",
+            meeting_id="29250e01-0751-4e02-9b24-f6d06f878b04",
+            title="Weekly Sync",
+            started_at="2026-03-01T09:12:00-06:00",
+            attendees=[],
+            transcript_text="Speaker A: hello",
+            raw_payload={},
+        )
+
+    monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", _mock_retrieve)
+
+    def _fail_ensure(_: AppConfig) -> None:
+        raise AssertionError("should not be called in --no-llm mode")
+
+    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_server", _fail_ensure)
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+            "--folder",
+            "Inbox/Meetings/",
+            "--yes",
+            "--no-llm",
+        ],
+    )
+    assert result.exit_code == 0
+
+
 def test_process_new_updates_when_staged_hash_changes(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     home = tmp_path / "home"

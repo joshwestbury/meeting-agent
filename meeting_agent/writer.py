@@ -38,10 +38,10 @@ def build_note_filename(
 ) -> str:
     safe_title = sanitize_title_for_filename(title)
     if not use_time_fallback:
-        return f"{meeting_date} - {safe_title}.md"
+        return f"{safe_title} - {meeting_date}.md"
 
     stamp = _extract_time_stamp(started_at)
-    return f"{meeting_date} {stamp} - {safe_title}.md"
+    return f"{safe_title} - {meeting_date} {stamp}.md"
 
 
 def render_markdown_note(

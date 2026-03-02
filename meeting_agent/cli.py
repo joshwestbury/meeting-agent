@@ -2,7 +2,11 @@ from pathlib import Path
 import subprocess
 from datetime import date, datetime
 from dataclasses import dataclass
+import shutil
+import time
+from urllib.parse import urlparse
 
+import httpx
 import typer
 
 from meeting_agent import models
@@ -395,6 +399,7 @@ def _run_single_process(
             )
         else:
             reason = "llm"
+            _ensure_local_llm_server(config)
             payload = generate_note_payload_with_local_runtime(
                 normalized_text,
                 [folder_choice],
@@ -413,6 +418,9 @@ def _run_single_process(
         )
         typer.echo(render_error_message(exc, context="Schema validation failed"))
         return exit_code_for_error(exc)
+
+    # Recording metadata is authoritative: always use the call's recorded date.
+    payload = payload.model_copy(update={"meeting_date": meeting_date})
 
     filename = build_note_filename(
         meeting_date=payload.meeting_date,
@@ -644,6 +652,7 @@ def _run_batch_process_new(
                     tags=["meeting", "staged"],
                 )
             else:
+                _ensure_local_llm_server(config)
                 payload = generate_note_payload_with_local_runtime(
                     normalized,
                     [folder_choice],
@@ -744,3 +753,68 @@ def _batch_should_skip(config: AppConfig, transcript_file: Path, transcript_hash
 def _title_from_meeting_id(meeting_id: str) -> str:
     cleaned = meeting_id.replace("-", " ").strip()
     return cleaned if cleaned else "Meeting Notes"
+
+
+def _ensure_local_llm_server(config: AppConfig) -> None:
+    if _is_server_reachable(config.llm_server_url):
+        return
+
+    runtime_path = shutil.which("llama-server")
+    if not runtime_path:
+        raise SchemaValidationError(
+            "Local LLM runtime `llama-server` was not found on PATH. Install llama.cpp first."
+        )
+
+    filename = models.resolve_model_filename(config.llm_model, config.llm_model_variant)
+    model_path = models.resolve_model_output_path(config.model_cache_dir, config.llm_model, filename)
+    if not model_path.exists():
+        raise SchemaValidationError(
+            f"Configured model not found at {model_path}. Run `meeting-agent models pull`."
+        )
+
+    parsed = urlparse(config.llm_server_url)
+    if parsed.scheme not in {"http", ""}:
+        raise SchemaValidationError(f"Unsupported llm_server_url scheme: {config.llm_server_url}")
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8080
+
+    try:
+        subprocess.Popen(
+            [
+                runtime_path,
+                "-m",
+                str(model_path),
+                "--host",
+                host,
+                "--port",
+                str(port),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise SchemaValidationError(f"Could not start local LLM server: {exc}") from exc
+
+    if not _wait_for_server(config.llm_server_url, timeout_seconds=45.0):
+        raise SchemaValidationError(
+            f"Local LLM server did not become ready at {config.llm_server_url}. Start it manually and retry."
+        )
+
+
+def _is_server_reachable(server_url: str) -> bool:
+    endpoint = f"{server_url.rstrip('/')}/v1/models"
+    try:
+        response = httpx.get(endpoint, timeout=2.0)
+    except httpx.HTTPError:
+        return False
+    return response.status_code < 400
+
+
+def _wait_for_server(server_url: str, *, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if _is_server_reachable(server_url):
+            return True
+        time.sleep(0.25)
+    return False

@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -40,14 +41,23 @@ class NotePayload(BaseModel):
         return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
-def parse_llm_note_payload(raw: str | dict[str, Any]) -> NotePayload:
+def parse_llm_note_payload(
+    raw: str | dict[str, Any],
+    *,
+    default_folder_choice: str | None = None,
+    default_meeting_date: str | None = None,
+) -> NotePayload:
     try:
         payload = json.loads(raw) if isinstance(raw, str) else raw
     except json.JSONDecodeError as exc:
         raise SchemaValidationError(f"LLM output is not valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise SchemaValidationError("LLM output must be a JSON object")
-    payload = _normalize_llm_payload_shape(payload)
+    payload = _normalize_llm_payload_shape(
+        payload,
+        default_folder_choice=default_folder_choice,
+        default_meeting_date=default_meeting_date,
+    )
     try:
         return NotePayload.model_validate(payload)
     except ValidationError as exc:
@@ -73,12 +83,57 @@ def validate_note_length(note: NotePayload, *, max_total_chars: int = MAX_TOTAL_
         )
 
 
-def _normalize_llm_payload_shape(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(payload)
+_ALLOWED_FIELDS = {
+    "title",
+    "meeting_date",
+    "attendees",
+    "client",
+    "project",
+    "tags",
+    "folder_choice",
+    "summary",
+    "action_items",
+    "key_details",
+    "decisions",
+    "open_questions",
+    "sensitive",
+}
+
+
+def _normalize_llm_payload_shape(
+    payload: dict[str, Any],
+    *,
+    default_folder_choice: str | None,
+    default_meeting_date: str | None,
+) -> dict[str, Any]:
+    merged = dict(payload)
+    meeting_note = merged.get("meeting_note")
+    if isinstance(meeting_note, dict):
+        unwrapped = dict(meeting_note)
+        # Top-level recognized keys override wrapper keys if present.
+        for key, value in merged.items():
+            if key != "meeting_note" and key in _ALLOWED_FIELDS:
+                unwrapped[key] = value
+        merged = unwrapped
+
+    # Drop unknown keys to tolerate model shape drift (for example "attachments").
+    normalized = {key: value for key, value in merged.items() if key in _ALLOWED_FIELDS}
 
     list_fields = ["attendees", "tags", "action_items", "key_details", "decisions", "open_questions"]
     for field in list_fields:
         normalized[field] = _coerce_to_string_list(normalized.get(field))
+
+    if not isinstance(normalized.get("title"), str) or not str(normalized.get("title", "")).strip():
+        normalized["title"] = "Meeting Notes"
+    if not isinstance(normalized.get("summary"), str) or not str(normalized.get("summary", "")).strip():
+        normalized["summary"] = "Summary unavailable from model output."
+    if not isinstance(normalized.get("meeting_date"), str) or not str(normalized.get("meeting_date", "")).strip():
+        normalized["meeting_date"] = default_meeting_date or date.today().isoformat()
+    if default_folder_choice and (
+        not isinstance(normalized.get("folder_choice"), str)
+        or not str(normalized.get("folder_choice", "")).strip()
+    ):
+        normalized["folder_choice"] = default_folder_choice
 
     normalized["sensitive"] = _coerce_to_bool(normalized.get("sensitive"))
     return normalized
