@@ -87,6 +87,36 @@ def test_process_dry_run_no_llm_outputs_preview(tmp_path: Path, monkeypatch) -> 
     assert "output_path:" in result.output
 
 
+def test_process_skips_when_source_url_already_exists_in_vault(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path))
+    existing = tmp_path / "vault" / "Inbox" / "Meetings" / "existing.md"
+    existing.parent.mkdir(parents=True, exist_ok=True)
+    existing.write_text(
+        "---\nsource_url: https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    def _fail_retrieve(*_args, **_kwargs):
+        raise AssertionError("retrieve_transcript should not be called for source_url duplicate")
+
+    monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", _fail_retrieve)
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+            "--folder",
+            "Inbox/Meetings/",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Skipped duplicate source_url. Existing note:" in result.output
+
+
 def test_process_default_writes_full_transcript_section(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     home = tmp_path / "home"

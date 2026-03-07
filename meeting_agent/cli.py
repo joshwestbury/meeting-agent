@@ -6,10 +6,11 @@ import difflib
 import re
 import shutil
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 import typer
+import yaml
 
 from meeting_agent import models
 from meeting_agent.auth import import_desktop_session_credentials
@@ -23,6 +24,7 @@ from meeting_agent.errors import (
     CollisionError,
     ConfigError,
     FolderValidationError,
+    LinkValidationError,
     RetrievalError,
     SchemaValidationError,
     StateError,
@@ -36,6 +38,7 @@ from meeting_agent.llm import (
 from meeting_agent.logging import log_event
 from meeting_agent.normalize import compute_source_key, compute_transcript_hash, normalize_transcript_text
 from meeting_agent.pipeline import process_note_write, resolve_output_path
+from meeting_agent.links import parse_granola_link
 from meeting_agent.retrieval import retrieve_transcript
 from meeting_agent.staging import stage_transcript
 from meeting_agent.state import StateEntry, load_state
@@ -548,6 +551,16 @@ def _run_single_process(
     command_name: str,
 ) -> int:
     log_event(command=command_name, source_url=granola_link, action="start")
+    existing_path = _find_existing_note_by_source_url(config.vault_root, granola_link)
+    if existing_path is not None:
+        log_event(
+            command=command_name,
+            source_url=granola_link,
+            action="skipped_existing_source_url",
+            output_path=str(existing_path),
+        )
+        typer.echo(f"Skipped duplicate source_url. Existing note: {existing_path}")
+        return 0
     typer.echo("Retrieving transcript...")
 
     try:
@@ -1062,3 +1075,61 @@ def _wait_for_server(server_url: str, *, timeout_seconds: float) -> bool:
             return True
         time.sleep(0.25)
     return False
+
+
+def _find_existing_note_by_source_url(vault_root: Path, source_url: str) -> Path | None:
+    if not vault_root.exists():
+        return None
+    target_keys = _source_url_match_keys(source_url)
+    for note_path in sorted(vault_root.rglob("*.md")):
+        frontmatter = _read_frontmatter(note_path)
+        if not isinstance(frontmatter, dict):
+            continue
+        candidate_url = frontmatter.get("source_url")
+        if not isinstance(candidate_url, str) or not candidate_url.strip():
+            continue
+        if target_keys.intersection(_source_url_match_keys(candidate_url)):
+            return note_path
+    return None
+
+
+def _read_frontmatter(note_path: Path) -> dict | None:
+    try:
+        raw = note_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", raw, re.DOTALL)
+    if not match:
+        return None
+    try:
+        parsed = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        return None
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
+def _source_url_match_keys(source_url: str) -> set[str]:
+    value = source_url.strip()
+    if not value:
+        return set()
+    keys = {value}
+    parsed = urlparse(value)
+    canonical = urlunparse(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            parsed.path.rstrip("/"),
+            "",
+            "",
+            "",
+        )
+    )
+    keys.add(canonical)
+    try:
+        parsed_granola = parse_granola_link(value)
+        keys.add(f"meeting_id:{parsed_granola.meeting_id}")
+    except LinkValidationError:
+        pass
+    return {item for item in keys if item}
