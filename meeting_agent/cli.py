@@ -617,8 +617,11 @@ def _run_single_process(
             typer.echo(render_error_message(exc, context="Schema validation failed"))
             return exit_code_for_error(exc)
 
-    # Recording metadata is authoritative: always use the call's recorded date.
-    payload = payload.model_copy(update={"meeting_date": meeting_date})
+    # Recording metadata is authoritative: use source title/date when available.
+    payload_updates = {"meeting_date": meeting_date}
+    if retrieval.title and retrieval.title.strip():
+        payload_updates["title"] = retrieval.title.strip()
+    payload = payload.model_copy(update=payload_updates)
 
     filename = build_note_filename(
         meeting_date=payload.meeting_date,

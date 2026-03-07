@@ -127,8 +127,10 @@ def _normalize_llm_payload_shape(
         normalized["title"] = "Meeting Notes"
     if not isinstance(normalized.get("summary"), str) or not str(normalized.get("summary", "")).strip():
         normalized["summary"] = "Summary unavailable from model output."
-    if not isinstance(normalized.get("meeting_date"), str) or not str(normalized.get("meeting_date", "")).strip():
-        normalized["meeting_date"] = default_meeting_date or date.today().isoformat()
+    normalized["meeting_date"] = _normalize_meeting_date_value(
+        normalized.get("meeting_date"),
+        default_meeting_date=default_meeting_date,
+    )
     if default_folder_choice and (
         not isinstance(normalized.get("folder_choice"), str)
         or not str(normalized.get("folder_choice", "")).strip()
@@ -183,3 +185,17 @@ def _coerce_to_bool(value: Any) -> bool:
                 return True
         return False
     return False
+
+
+def _normalize_meeting_date_value(value: Any, *, default_meeting_date: str | None) -> str:
+    fallback = default_meeting_date or date.today().isoformat()
+    if not isinstance(value, str):
+        return fallback
+    candidate = value.strip()
+    if not candidate:
+        return fallback
+    try:
+        parsed = date.fromisoformat(candidate)
+    except ValueError:
+        return fallback
+    return parsed.isoformat()

@@ -82,7 +82,7 @@ def generate_note_payload_with_local_runtime(
         llm_output,
         default_folder_choice=candidate_folders[0],
     )
-    ensure_folder_choice_candidate(note, candidate_folders)
+    note = _coerce_folder_choice_to_candidate(note, candidate_folders)
     validate_note_length(note, max_total_chars=max_total_chars)
     return note
 
@@ -257,3 +257,11 @@ def _extract_folder_index(content: str, *, max_index: int) -> int:
             f"Local LLM folder-selection index out of range: {index} (1-{max_index})"
         )
     return index
+
+
+def _coerce_folder_choice_to_candidate(note: NotePayload, candidate_folders: list[str]) -> NotePayload:
+    try:
+        ensure_folder_choice_candidate(note, candidate_folders)
+        return note
+    except SchemaValidationError:
+        return note.model_copy(update={"folder_choice": candidate_folders[0]})

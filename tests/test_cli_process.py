@@ -335,6 +335,9 @@ def test_process_local_mode_invokes_server_ensure(tmp_path: Path, monkeypatch) -
     )
     assert result.exit_code == 0
     assert called["ensure"] is True
+    note_files = list((tmp_path / "vault" / "Inbox" / "Meetings").glob("*.md"))
+    assert len(note_files) == 1
+    assert "Weekly Sync - 2026-03-01.md" == note_files[0].name
 
 
 def test_process_no_llm_does_not_invoke_server_ensure(tmp_path: Path, monkeypatch) -> None:

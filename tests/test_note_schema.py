@@ -144,7 +144,7 @@ def test_validate_note_length_accepts_under_limit() -> None:
     validate_note_length(note, max_total_chars=100)
 
 
-def test_parse_llm_note_payload_rejects_bad_date_format() -> None:
+def test_parse_llm_note_payload_coerces_bad_date_format_to_default() -> None:
     payload = {
         "title": "Weekly Sync",
         "meeting_date": "02-28-2026",
@@ -158,8 +158,8 @@ def test_parse_llm_note_payload_rejects_bad_date_format() -> None:
         "key_details": [],
         "sensitive": False,
     }
-    with pytest.raises(SchemaValidationError):
-        parse_llm_note_payload(payload)
+    note = parse_llm_note_payload(payload, default_meeting_date="2026-02-28")
+    assert note.meeting_date == "2026-02-28"
 
 
 def test_parse_llm_note_payload_coerces_common_model_shape_drift() -> None:

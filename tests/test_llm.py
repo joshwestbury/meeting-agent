@@ -216,7 +216,7 @@ def test_generate_note_payload_with_local_runtime_success() -> None:
     client.close()
 
 
-def test_generate_note_payload_with_local_runtime_rejects_wrong_folder() -> None:
+def test_generate_note_payload_with_local_runtime_coerces_wrong_folder() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -232,14 +232,44 @@ def test_generate_note_payload_with_local_runtime_rejects_wrong_folder() -> None
         )
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    with pytest.raises(SchemaValidationError):
-        generate_note_payload_with_local_runtime(
-            "transcript",
-            ["Inbox/Meetings/"],
-            model="LiquidAI/LFM2-2.6B-Transcript-GGUF",
-            server_url="http://127.0.0.1:8080",
-            client=client,
+    note = generate_note_payload_with_local_runtime(
+        "transcript",
+        ["Inbox/Meetings/"],
+        model="LiquidAI/LFM2-2.6B-Transcript-GGUF",
+        server_url="http://127.0.0.1:8080",
+        client=client,
+    )
+    assert note.folder_choice == "Inbox/Meetings/"
+    assert note.summary == "Summary"
+    client.close()
+
+
+def test_generate_note_payload_with_local_runtime_coerces_bad_meeting_date() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"title":"Sync","meeting_date":"Happy Friday","attendees":[],"client":"","project":"","tags":["meeting"],"folder_choice":"Inbox/Meetings/","summary":"Summary","action_items":[],"key_details":[],"sensitive":false}'
+                        }
+                    }
+                ]
+            },
         )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    note = generate_note_payload_with_local_runtime(
+        "transcript",
+        ["Inbox/Meetings/"],
+        model="LiquidAI/LFM2-2.6B-Transcript-GGUF",
+        server_url="http://127.0.0.1:8080",
+        client=client,
+    )
+    assert note.meeting_date
+    assert len(note.meeting_date) == 10
+    assert note.summary == "Summary"
     client.close()
 
 
