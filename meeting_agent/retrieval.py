@@ -159,7 +159,15 @@ def _retrieve_remote(
             raise RetrievalError(NETWORK_ERROR, f"Unexpected HTTP error from Granola: {response.status_code}")
 
         payload = _parse_json_payload(response)
-        return _payload_to_result(payload, fallback_meeting_id)
+        result = _payload_to_result(payload, fallback_meeting_id)
+        if _needs_document_metadata_fallback(result, payload):
+            metadata = _fetch_document_metadata(
+                document_id=document_id,
+                headers=headers,
+                client=client,
+            )
+            result = _merge_result_with_document_metadata(result, metadata)
+        return result
         # no loop increment needed on return
 
     # loop exhausted
@@ -171,6 +179,83 @@ def _retrieve_remote(
 
 def _retry_pause(attempt: int) -> None:
     time.sleep(0.05 * (2**attempt))
+
+
+def _needs_document_metadata_fallback(result: RetrievalResult, payload: dict[str, Any] | list[Any]) -> bool:
+    if result.title and result.started_at:
+        return False
+    if isinstance(payload, list):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    # Granola sometimes returns transcript-only payloads under `transcript_segments`.
+    return "transcript_segments" in payload
+
+
+def _fetch_document_metadata(
+    *,
+    document_id: str,
+    headers: dict[str, str],
+    client: httpx.Client,
+) -> dict[str, Any] | None:
+    try:
+        response = client.post(
+            f"{GRANOLA_API_BASE_URL}/v1/get-documents-batch",
+            headers=_granola_client_headers(headers),
+            json={
+                "document_ids": [document_id],
+                "include_last_viewed_panel": True,
+            },
+            timeout=20.0,
+        )
+    except httpx.TransportError:
+        return None
+    if response.status_code >= 400:
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    docs = payload.get("docs")
+    if not isinstance(docs, list):
+        return None
+    for doc in docs:
+        if isinstance(doc, dict) and str(doc.get("id", "")) == document_id:
+            return doc
+    return None
+
+
+def _merge_result_with_document_metadata(
+    result: RetrievalResult,
+    metadata: dict[str, Any] | None,
+) -> RetrievalResult:
+    if not metadata:
+        return result
+    title = result.title
+    if not title:
+        raw_title = metadata.get("title")
+        if isinstance(raw_title, str) and raw_title.strip():
+            title = raw_title.strip()
+    started_at = result.started_at
+    if not started_at:
+        raw_started_at = metadata.get("started_at")
+        if not isinstance(raw_started_at, str) or not raw_started_at.strip():
+            raw_started_at = metadata.get("created_at")
+        if isinstance(raw_started_at, str) and raw_started_at.strip():
+            started_at = raw_started_at.strip()
+    if title == result.title and started_at == result.started_at:
+        return result
+    return RetrievalResult(
+        granola_id=result.granola_id,
+        meeting_id=result.meeting_id,
+        title=title,
+        started_at=started_at,
+        attendees=result.attendees,
+        transcript_text=result.transcript_text,
+        raw_payload=result.raw_payload,
+    )
 
 
 def _build_auth_headers(config: AppConfig) -> dict[str, str]:
@@ -283,6 +368,10 @@ def _extract_payload_fields(
         )
 
     transcript_text = payload.get("transcript_text") or payload.get("transcript") or payload.get("text")
+    if not isinstance(transcript_text, str):
+        segments = payload.get("transcript_segments")
+        if isinstance(segments, list):
+            transcript_text = _segments_to_text(segments)
     if not isinstance(transcript_text, str):
         raise RetrievalError(PARSE_ERROR, "Transcript text missing or not a string.")
 

@@ -17,17 +17,16 @@ uv run meeting-agent process "<granola_link>" --yes
 
 `meeting-agent process` supports two output modes:
 
+- default (no flag):
+  - Structured note plus a `## Full Transcript` section.
 - `--summary`:
-  - Summary-style note (default behavior).
-  - Includes structured sections (`Summary`, `Action Items`, `Key Details`, etc.).
-- `--full`:
-  - Same structured note, plus a `## Full Transcript` section containing the entire transcript text.
+  - Summary-only structured note (`Summary`, `Action Items`, `Key Details`, etc.).
 
 Examples:
 
 ```bash
 uv run meeting-agent process "<granola_link>" --yes --summary
-uv run meeting-agent process "<granola_link>" --yes --full
+uv run meeting-agent process "<granola_link>" --yes
 ```
 
 ## Shell Shortcut (`ma`)
@@ -58,9 +57,9 @@ Then use:
 
 ```bash
 ma "<granola_link>" --summary
-ma "<granola_link>" --full
+ma "<granola_link>"
 ```
 
 Notes:
-- `--summary` is optional because summary is default.
+- `--summary` is optional because full transcript mode is default.
 - Prefer `ma` (no leading `-`) for reliable zsh behavior.

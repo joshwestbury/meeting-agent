@@ -501,3 +501,46 @@ def test_retrieve_transcript_desktop_session_refreshes_once_on_401(
     assert result.transcript_text == "ok"
     assert seen_headers == ["Bearer stale-token", "Bearer fresh-token"]
     client.close()
+
+
+def test_retrieve_transcript_enriches_title_from_documents_batch_when_segments_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MEETING_AGENT_TOKEN", "secret")
+    config = _base_config(tmp_path, "token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/get-document-transcript":
+            return httpx.Response(
+                200,
+                json=[
+                    {"text": "first line"},
+                    {"text": "second line"},
+                ],
+            )
+        if request.url.path == "/v1/get-documents-batch":
+            return httpx.Response(
+                200,
+                json={
+                    "docs": [
+                        {
+                            "id": "29250e01-0751-4e02-9b24-f6d06f878b04",
+                            "title": "[Internal] Dialpad CPQ / Integration Sync",
+                            "created_at": "2026-03-06T18:30:57.148Z",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404, json={"error": "not found"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = retrieve_transcript(
+        "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+        config,
+        client=client,
+        max_retries=0,
+    )
+    assert result.transcript_text == "first line\nsecond line"
+    assert result.title == "[Internal] Dialpad CPQ / Integration Sync"
+    assert result.started_at == "2026-03-06T18:30:57.148Z"
+    client.close()

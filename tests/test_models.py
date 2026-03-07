@@ -8,6 +8,7 @@ from meeting_agent.models import (
     DEFAULT_MODEL_REPO,
     DEFAULT_MODEL_VARIANT,
     LARGE_MODEL_REPO,
+    QWEN_MEDIUM_MODEL_REPO,
     build_huggingface_model_url,
     list_installed_models,
     model_size_guidance,
@@ -20,6 +21,7 @@ from meeting_agent.models import (
 def test_resolve_model_filename_for_known_models() -> None:
     assert resolve_model_filename(DEFAULT_MODEL_REPO, "Q4_K_M") == "LFM2-2.6B-Transcript-Q4_K_M.gguf"
     assert resolve_model_filename(LARGE_MODEL_REPO, "Q4_0") == "LFM2-24B-A2B-Q4_0.gguf"
+    assert resolve_model_filename(QWEN_MEDIUM_MODEL_REPO, "Q5_K_M") == "Qwen2.5-7B-Instruct-Q5_K_M.gguf"
 
 
 def test_resolve_model_filename_rejects_unknown_model() -> None:
@@ -113,3 +115,4 @@ def test_run_models_doctor_reports_status(tmp_path: Path, monkeypatch: pytest.Mo
 def test_model_size_guidance_includes_known_ranges() -> None:
     assert "1.5-2.7 GB" in model_size_guidance(DEFAULT_MODEL_REPO)
     assert "13.5-25.4 GB" in model_size_guidance(LARGE_MODEL_REPO)
+    assert "4.4-6.3 GB" in model_size_guidance(QWEN_MEDIUM_MODEL_REPO)

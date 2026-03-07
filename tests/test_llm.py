@@ -5,6 +5,7 @@ from meeting_agent.errors import SchemaValidationError
 from meeting_agent.llm import (
     build_no_llm_payload,
     call_local_llama_server,
+    choose_candidate_folder_with_local_runtime,
     generate_note_payload_with_local_runtime,
     generate_note_payload_with_llm,
 )
@@ -235,6 +236,44 @@ def test_generate_note_payload_with_local_runtime_rejects_wrong_folder() -> None
         generate_note_payload_with_local_runtime(
             "transcript",
             ["Inbox/Meetings/"],
+            model="LiquidAI/LFM2-2.6B-Transcript-GGUF",
+            server_url="http://127.0.0.1:8080",
+            client=client,
+        )
+    client.close()
+
+
+def test_choose_candidate_folder_with_local_runtime_selects_index() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "2"}}]},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    selected = choose_candidate_folder_with_local_runtime(
+        "alter mentis inbox",
+        ["Inbox/Meetings/", "Alter Mentis/Inbox/"],
+        model="LiquidAI/LFM2-2.6B-Transcript-GGUF",
+        server_url="http://127.0.0.1:8080",
+        client=client,
+    )
+    assert selected == "Alter Mentis/Inbox/"
+    client.close()
+
+
+def test_choose_candidate_folder_with_local_runtime_rejects_bad_index() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "99"}}]},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(SchemaValidationError, match="out of range"):
+        choose_candidate_folder_with_local_runtime(
+            "alter mentis inbox",
+            ["Inbox/Meetings/", "Alter Mentis/Inbox/"],
             model="LiquidAI/LFM2-2.6B-Transcript-GGUF",
             server_url="http://127.0.0.1:8080",
             client=client,

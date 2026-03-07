@@ -2,6 +2,8 @@ from pathlib import Path
 import subprocess
 from datetime import date, datetime
 from dataclasses import dataclass
+import difflib
+import re
 import shutil
 import time
 from urllib.parse import urlparse
@@ -28,6 +30,7 @@ from meeting_agent.errors import (
 from meeting_agent.exit_codes import exit_code_for_error, render_error_message
 from meeting_agent.llm import (
     build_no_llm_payload,
+    choose_candidate_folder_with_local_runtime,
     generate_note_payload_with_local_runtime,
 )
 from meeting_agent.logging import log_event
@@ -156,23 +159,25 @@ def process_command(
         None,
         help="Granola meeting link (required unless --new is used).",
     ),
-    folder: str | None = typer.Option(None, "--folder", help="Vault-relative folder destination."),
+    folder: str | None = typer.Option(
+        None,
+        "--folder",
+        help="Destination folder hint. Use without a value to be prompted.",
+        prompt="Which folder",
+        prompt_required=False,
+    ),
     yes: bool = typer.Option(False, "--yes", help="Skip write confirmation prompt."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show resolved output, do not write/state update."),
     no_llm: bool = typer.Option(False, "--no-llm", help="Bypass LLM and use deterministic template."),
-    summary: bool = typer.Option(False, "--summary", help="Write summary note format (default behavior)."),
-    full: bool = typer.Option(False, "--full", help="Include full transcript body in note."),
+    summary: bool = typer.Option(False, "--summary", help="Write summary-only note format."),
     process_new: bool = typer.Option(False, "--new", help="Process unprocessed/changed staged transcripts."),
 ) -> None:
     """Process one meeting link through retrieval, generation, and write pipeline."""
     config = load_and_validate_startup_config()
-    if summary and full:
-        typer.echo("Use either --summary or --full, not both.")
-        raise typer.Exit(code=3)
-    output_mode = "full" if full else "summary"
+    output_mode = "summary" if summary else "full"
 
     if process_new:
-        folder_choice = _resolve_folder_choice(config, folder)
+        folder_choice = _resolve_folder_choice(config, folder, no_llm=no_llm)
         exit_code = _run_batch_process_new(
             config=config,
             folder_choice=folder_choice,
@@ -189,7 +194,7 @@ def process_command(
         typer.echo("A Granola link is required unless --new is used.")
         raise typer.Exit(code=3)
 
-    folder_choice = _resolve_folder_choice(config, folder)
+    folder_choice = _resolve_folder_choice(config, folder, no_llm=no_llm)
     exit_code = _run_single_process(
         config=config,
         granola_link=granola_link,
@@ -318,7 +323,7 @@ def models_list_command() -> None:
 
 def _interactive_default_flow(config: AppConfig) -> None:
     granola_link = typer.prompt("Granola meeting link")
-    folder_choice = _resolve_folder_choice(config, None, prompt_label="Destination folder (vault-relative)")
+    folder_choice = _resolve_folder_choice(config, None, no_llm=False, prompt_label="Destination folder")
     exit_code = _run_single_process(
         config=config,
         granola_link=granola_link,
@@ -326,7 +331,7 @@ def _interactive_default_flow(config: AppConfig) -> None:
         confirm_write=True,
         dry_run=False,
         no_llm=False,
-        output_mode="summary",
+        output_mode="full",
         command_name="interactive",
     )
     if exit_code != 0:
@@ -335,15 +340,184 @@ def _interactive_default_flow(config: AppConfig) -> None:
 
 def _resolve_folder_choice(
     config: AppConfig,
-    folder: str | None,
+    folder_hint: str | None,
     *,
-    prompt_label: str = "Destination folder (vault-relative)",
+    no_llm: bool,
+    prompt_label: str = "Destination folder",
 ) -> str:
-    if folder and folder.strip():
-        return folder.strip()
+    if folder_hint and folder_hint.strip():
+        resolved = _resolve_folder_hint(config, folder_hint.strip(), no_llm=no_llm)
+        if resolved is not None:
+            return resolved
+        fallback = _default_folder_choice(config)
+        if fallback is not None:
+            typer.echo(
+                f"Could not match '{folder_hint.strip()}' to a vault folder. Falling back to default: {fallback}"
+            )
+            return fallback
+        typer.echo(
+            f"Could not match '{folder_hint.strip()}' to an existing vault folder; using the provided folder input."
+        )
+        return folder_hint.strip()
+
+    default_folder = _default_folder_choice(config)
+    if default_folder is not None:
+        return default_folder
+    return typer.prompt(prompt_label)
+
+
+def _default_folder_choice(config: AppConfig) -> str | None:
     if config.default_folder and config.default_folder.strip():
         return config.default_folder.strip()
-    return typer.prompt(prompt_label)
+    return None
+
+
+def _resolve_folder_hint(config: AppConfig, folder_hint: str, *, no_llm: bool) -> str | None:
+    candidates = _discover_vault_folder_candidates(config.vault_root)
+    if not candidates:
+        return None
+
+    folder_hints = _folder_hint_variants(folder_hint, config)
+    exact_match = _exact_folder_match_for_hints(folder_hints, candidates)
+    if exact_match is not None:
+        if _normalize_folder_path(folder_hint).casefold() != _normalize_folder_path(exact_match).casefold():
+            typer.echo(f"Folder resolved: {folder_hint} -> {exact_match}")
+        elif folder_hint.strip() != exact_match:
+            typer.echo(f"Folder resolved: {folder_hint} -> {exact_match}")
+        return exact_match
+
+    ranked = _rank_folder_candidates_for_hints(folder_hints, candidates)
+    if not ranked:
+        return None
+    best_score, best_candidate = ranked[0]
+    second_score = ranked[1][0] if len(ranked) > 1 else 0
+    if best_score >= 92:
+        typer.echo(f"Folder resolved: {folder_hint} -> {best_candidate}")
+        return best_candidate
+    if best_score >= 84 and best_score - second_score >= 8:
+        typer.echo(f"Folder resolved: {folder_hint} -> {best_candidate}")
+        return best_candidate
+
+    llm_pick = _resolve_folder_hint_with_llm(config, folder_hint, ranked, no_llm=no_llm)
+    if llm_pick is not None:
+        typer.echo(f"Folder resolved: {folder_hint} -> {llm_pick}")
+        return llm_pick
+    return None
+
+
+def _folder_hint_variants(folder_hint: str, config: AppConfig) -> list[str]:
+    variants: list[str] = [folder_hint]
+    preferred_root = _preferred_folder_root(config)
+    normalized_hint = _normalize_folder_path(folder_hint)
+    if preferred_root and normalized_hint:
+        rooted_prefix = f"{preferred_root.casefold()}/"
+        normalized_folded = normalized_hint.casefold()
+        if normalized_folded != preferred_root.casefold() and not normalized_folded.startswith(rooted_prefix):
+            variants.append(f"{preferred_root}/{normalized_hint}")
+    return variants
+
+
+def _preferred_folder_root(config: AppConfig) -> str | None:
+    default_folder = _default_folder_choice(config)
+    if not default_folder:
+        return None
+    normalized = _normalize_folder_path(default_folder)
+    if not normalized:
+        return None
+    return normalized.split("/")[0]
+
+
+def _resolve_folder_hint_with_llm(
+    config: AppConfig,
+    folder_hint: str,
+    ranked_candidates: list[tuple[int, str]],
+    *,
+    no_llm: bool,
+) -> str | None:
+    if no_llm or config.llm_mode != "local":
+        return None
+    top_candidates = [candidate for _, candidate in ranked_candidates[:8]]
+    if not top_candidates:
+        return None
+    try:
+        _ensure_local_llm_server(config)
+        return choose_candidate_folder_with_local_runtime(
+            folder_hint,
+            top_candidates,
+            model=config.llm_model,
+            server_url=config.llm_server_url,
+        )
+    except SchemaValidationError:
+        return None
+
+
+def _discover_vault_folder_candidates(vault_root: Path) -> list[str]:
+    if not vault_root.exists():
+        return []
+    candidates: list[str] = []
+    for directory in sorted(path for path in vault_root.rglob("*") if path.is_dir()):
+        relative = directory.relative_to(vault_root).as_posix().strip("/")
+        if not relative:
+            continue
+        candidates.append(f"{relative}/")
+    return candidates
+
+
+def _exact_folder_match_for_hints(folder_hints: list[str], candidates: list[str]) -> str | None:
+    for folder_hint in folder_hints:
+        normalized_hint = _normalize_folder_path(folder_hint)
+        for candidate in candidates:
+            if _normalize_folder_path(candidate).casefold() == normalized_hint.casefold():
+                return candidate
+    return None
+
+
+def _rank_folder_candidates(folder_hint: str, candidates: list[str]) -> list[tuple[int, str]]:
+    hint_path = _normalize_folder_path(folder_hint)
+    hint_key = _folder_key(folder_hint)
+    hint_leaf = hint_path.split("/")[-1] if hint_path else ""
+    scored: list[tuple[int, str]] = []
+    for candidate in candidates:
+        candidate_path = _normalize_folder_path(candidate)
+        candidate_key = _folder_key(candidate)
+        candidate_leaf = candidate_path.split("/")[-1] if candidate_path else ""
+        score = int(difflib.SequenceMatcher(None, hint_key, candidate_key).ratio() * 70)
+        if hint_key and hint_key == candidate_key:
+            score = max(score, 100)
+        if hint_path and hint_path.casefold() == candidate_path.casefold():
+            score = max(score, 97)
+        if hint_leaf and hint_leaf.casefold() == candidate_leaf.casefold():
+            score = max(score, 90)
+        if hint_key and (hint_key in candidate_key or candidate_key in hint_key):
+            score = max(score, 84)
+        scored.append((score, candidate))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return scored
+
+
+def _rank_folder_candidates_for_hints(folder_hints: list[str], candidates: list[str]) -> list[tuple[int, str]]:
+    best_by_candidate: dict[str, int] = {}
+    for folder_hint in folder_hints:
+        for score, candidate in _rank_folder_candidates(folder_hint, candidates):
+            previous = best_by_candidate.get(candidate)
+            if previous is None or score > previous:
+                best_by_candidate[candidate] = score
+    ranked = [(score, candidate) for candidate, score in best_by_candidate.items()]
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return ranked
+
+
+def _normalize_folder_path(value: str) -> str:
+    cleaned = value.strip().replace("\\", "/")
+    cleaned = re.sub(r"/+", "/", cleaned).strip("/")
+    return cleaned
+
+
+def _folder_key(value: str) -> str:
+    normalized = _normalize_folder_path(value)
+    folded = normalized.casefold()
+    filtered = re.sub(r"[^a-z0-9/]+", " ", folded)
+    return re.sub(r"\s+", " ", filtered).strip()
 
 
 def _run_single_process(
@@ -407,17 +581,41 @@ def _run_single_process(
                 server_url=config.llm_server_url,
             )
     except SchemaValidationError as exc:
-        log_event(
-            command=command_name,
-            source_key=source_key,
-            source_url=granola_link,
-            transcript_path=str(transcript_path),
-            action="schema_validation_failure",
-            folder_choice=folder_choice,
-            error=str(exc),
-        )
-        typer.echo(render_error_message(exc, context="Schema validation failed"))
-        return exit_code_for_error(exc)
+        if not (no_llm or config.llm_mode == "none"):
+            log_event(
+                command=command_name,
+                source_key=source_key,
+                source_url=granola_link,
+                transcript_path=str(transcript_path),
+                action="schema_validation_fallback",
+                folder_choice=folder_choice,
+                error=str(exc),
+            )
+            typer.echo(
+                render_error_message(
+                    exc,
+                    context="LLM schema validation failed; falling back to deterministic template",
+                )
+            )
+            reason = "llm_schema_fallback"
+            payload = build_no_llm_payload(
+                meeting_date=meeting_date,
+                title=title,
+                folder_choice=folder_choice,
+                tags=["meeting"],
+            )
+        else:
+            log_event(
+                command=command_name,
+                source_key=source_key,
+                source_url=granola_link,
+                transcript_path=str(transcript_path),
+                action="schema_validation_failure",
+                folder_choice=folder_choice,
+                error=str(exc),
+            )
+            typer.echo(render_error_message(exc, context="Schema validation failed"))
+            return exit_code_for_error(exc)
 
     # Recording metadata is authoritative: always use the call's recorded date.
     payload = payload.model_copy(update={"meeting_date": meeting_date})
@@ -660,20 +858,43 @@ def _run_batch_process_new(
                     server_url=config.llm_server_url,
                 )
         except SchemaValidationError as exc:
-            counters = counters.bump("failed")
+            if no_llm or config.llm_mode == "none":
+                counters = counters.bump("failed")
+                typer.echo(
+                    render_error_message(exc, context=f"[failed] {transcript_file.name} schema validation failed")
+                )
+                log_event(
+                    command=command_name,
+                    source_key=source_key,
+                    source_url=source_url,
+                    transcript_path=str(transcript_file),
+                    action="schema_validation_failure",
+                    folder_choice=folder_choice,
+                    error=str(exc),
+                )
+                continue
+
             typer.echo(
-                render_error_message(exc, context=f"[failed] {transcript_file.name} schema validation failed")
+                render_error_message(
+                    exc,
+                    context=f"[fallback] {transcript_file.name} LLM schema validation failed; using deterministic template",
+                )
             )
             log_event(
                 command=command_name,
                 source_key=source_key,
                 source_url=source_url,
                 transcript_path=str(transcript_file),
-                action="schema_validation_failure",
+                action="schema_validation_fallback",
                 folder_choice=folder_choice,
                 error=str(exc),
             )
-            continue
+            payload = build_no_llm_payload(
+                meeting_date=date.today().isoformat(),
+                title=title,
+                folder_choice=folder_choice,
+                tags=["meeting", "staged"],
+            )
 
         if dry_run:
             preview_filename = build_note_filename(meeting_date=payload.meeting_date, title=payload.title)

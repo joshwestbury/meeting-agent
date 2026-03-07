@@ -87,6 +87,56 @@ def generate_note_payload_with_local_runtime(
     return note
 
 
+def choose_candidate_folder_with_local_runtime(
+    folder_hint: str,
+    candidate_folders: list[str],
+    *,
+    model: str,
+    server_url: str,
+    client: httpx.Client | None = None,
+) -> str:
+    if not candidate_folders:
+        raise SchemaValidationError("candidate_folders must not be empty")
+
+    prompt = _build_folder_choice_prompt(folder_hint, candidate_folders)
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Select exactly one folder from the numbered list. "
+                    "Reply with only the numeric index."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.0,
+    }
+
+    endpoint = f"{server_url.rstrip('/')}/v1/chat/completions"
+    created_client = client is None
+    http_client = client or httpx.Client()
+    try:
+        try:
+            response = http_client.post(endpoint, json=payload, timeout=20.0)
+        except httpx.TransportError as exc:
+            raise SchemaValidationError(f"Local LLM server request failed: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise SchemaValidationError(
+                f"Local LLM server returned HTTP {response.status_code}"
+            )
+
+        data = _parse_runtime_json(response)
+        selection_raw = _extract_message_content(data)
+        index = _extract_folder_index(selection_raw, max_index=len(candidate_folders))
+        return candidate_folders[index - 1]
+    finally:
+        if created_client:
+            http_client.close()
+
+
 def call_local_llama_server(
     transcript_text: str,
     candidate_folders: list[str],
@@ -142,6 +192,16 @@ def _build_prompt(transcript_text: str, candidate_folders: list[str]) -> str:
     )
 
 
+def _build_folder_choice_prompt(folder_hint: str, candidate_folders: list[str]) -> str:
+    choices = "\n".join(f"{idx}. {folder}" for idx, folder in enumerate(candidate_folders, start=1))
+    return (
+        f"User folder hint: {folder_hint}\n\n"
+        "Candidate folders:\n"
+        f"{choices}\n\n"
+        "Return only one number for the best folder."
+    )
+
+
 def _parse_runtime_json(response: httpx.Response) -> dict[str, Any]:
     try:
         data = response.json()
@@ -184,3 +244,16 @@ def _coerce_json_string(content: str) -> str:
     except json.JSONDecodeError:
         return cleaned
     return cleaned
+
+
+def _extract_folder_index(content: str, *, max_index: int) -> int:
+    cleaned = content.strip()
+    match = re.search(r"\b(\d+)\b", cleaned)
+    if not match:
+        raise SchemaValidationError("Local LLM folder-selection response missing numeric index")
+    index = int(match.group(1))
+    if index < 1 or index > max_index:
+        raise SchemaValidationError(
+            f"Local LLM folder-selection index out of range: {index} (1-{max_index})"
+        )
+    return index

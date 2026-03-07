@@ -18,6 +18,7 @@ class ModelSpec:
 DEFAULT_MODEL_REPO = "LiquidAI/LFM2-2.6B-Transcript-GGUF"
 DEFAULT_MODEL_VARIANT = "Q4_K_M"
 LARGE_MODEL_REPO = "LiquidAI/LFM2-24B-A2B-GGUF"
+QWEN_MEDIUM_MODEL_REPO = "bartowski/Qwen2.5-7B-Instruct-GGUF"
 
 MODEL_SPECS: dict[str, ModelSpec] = {
     DEFAULT_MODEL_REPO: ModelSpec(
@@ -29,6 +30,11 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         repo_id=LARGE_MODEL_REPO,
         filename_prefix="LFM2-24B-A2B",
         small_size_guidance="approximately 13.5-25.4 GB (variant dependent)",
+    ),
+    QWEN_MEDIUM_MODEL_REPO: ModelSpec(
+        repo_id=QWEN_MEDIUM_MODEL_REPO,
+        filename_prefix="Qwen2.5-7B-Instruct",
+        small_size_guidance="approximately 4.4-6.3 GB (variant dependent)",
     ),
 }
 
