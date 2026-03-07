@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import yaml
 from typer.testing import CliRunner
 
 from meeting_agent.cli import app
@@ -338,6 +339,14 @@ def test_process_local_mode_invokes_server_ensure(tmp_path: Path, monkeypatch) -
     note_files = list((tmp_path / "vault" / "Inbox" / "Meetings").glob("*.md"))
     assert len(note_files) == 1
     assert "Weekly Sync - 2026-03-01.md" == note_files[0].name
+    parts = note_files[0].read_text(encoding="utf-8").split("---\n")
+    frontmatter = yaml.safe_load(parts[1])
+    assert frontmatter["tags"] == [
+        "meeting",
+        "granola-meeting-agent",
+        "meeting-transcript",
+        "meetings",
+    ]
 
 
 def test_process_no_llm_does_not_invoke_server_ensure(tmp_path: Path, monkeypatch) -> None:

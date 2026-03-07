@@ -520,6 +520,22 @@ def _folder_key(value: str) -> str:
     return re.sub(r"\s+", " ", filtered).strip()
 
 
+def _standardized_tags(folder_choice: str) -> list[str]:
+    return [
+        "meeting",
+        "granola-meeting-agent",
+        "meeting-transcript",
+        _folder_leaf_tag(folder_choice),
+    ]
+
+
+def _folder_leaf_tag(folder_choice: str) -> str:
+    normalized = _normalize_folder_path(folder_choice)
+    leaf = normalized.split("/")[-1] if normalized else "inbox"
+    leaf = re.sub(r"[^a-z0-9]+", "-", leaf.casefold()).strip("-")
+    return leaf or "inbox"
+
+
 def _run_single_process(
     *,
     config: AppConfig,
@@ -618,7 +634,10 @@ def _run_single_process(
             return exit_code_for_error(exc)
 
     # Recording metadata is authoritative: use source title/date when available.
-    payload_updates = {"meeting_date": meeting_date}
+    payload_updates = {
+        "meeting_date": meeting_date,
+        "tags": _standardized_tags(payload.folder_choice),
+    }
     if retrieval.title and retrieval.title.strip():
         payload_updates["title"] = retrieval.title.strip()
     payload = payload.model_copy(update=payload_updates)
@@ -898,6 +917,7 @@ def _run_batch_process_new(
                 folder_choice=folder_choice,
                 tags=["meeting", "staged"],
             )
+        payload = payload.model_copy(update={"tags": _standardized_tags(folder_choice)})
 
         if dry_run:
             preview_filename = build_note_filename(meeting_date=payload.meeting_date, title=payload.title)
