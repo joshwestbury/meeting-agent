@@ -67,13 +67,11 @@ def test_acceptance_same_transcript_rerun_does_not_duplicate(tmp_path: Path, mon
     args = [
         "process",
         "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-        "--folder",
-        "Inbox/Meetings/",
         "--yes",
         "--no-llm",
     ]
-    first = runner.invoke(app, args)
-    second = runner.invoke(app, args)
+    first = runner.invoke(app, args, input="Inbox/Meetings/\n")
+    second = runner.invoke(app, args, input="Inbox/Meetings/\n")
     assert first.exit_code == 0
     assert second.exit_code == 0
 
@@ -118,10 +116,9 @@ def test_acceptance_local_mode_uses_llm_path(tmp_path: Path, monkeypatch) -> Non
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "Inbox/Meetings/",
             "--yes",
         ],
+        input="Inbox/Meetings/\n",
     )
     assert result.exit_code == 0
     assert called["llm"] is True

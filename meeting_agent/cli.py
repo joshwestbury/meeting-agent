@@ -162,13 +162,6 @@ def process_command(
         None,
         help="Granola meeting link (required unless --new is used).",
     ),
-    folder: str | None = typer.Option(
-        None,
-        "--folder",
-        help="Destination folder hint. Use without a value to be prompted.",
-        prompt="Which folder",
-        prompt_required=False,
-    ),
     yes: bool = typer.Option(False, "--yes", help="Skip write confirmation prompt."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show resolved output, do not write/state update."),
     no_llm: bool = typer.Option(False, "--no-llm", help="Bypass LLM and use deterministic template."),
@@ -180,7 +173,7 @@ def process_command(
     output_mode = "summary" if summary else "full"
 
     if process_new:
-        folder_choice = _resolve_folder_choice(config, folder, no_llm=no_llm)
+        folder_choice = _resolve_folder_choice(config, None, no_llm=no_llm)
         exit_code = _run_batch_process_new(
             config=config,
             folder_choice=folder_choice,
@@ -197,7 +190,19 @@ def process_command(
         typer.echo("A Granola link is required unless --new is used.")
         raise typer.Exit(code=3)
 
-    folder_choice = _resolve_folder_choice(config, folder, no_llm=no_llm)
+    duplicate_path = _find_existing_note_by_source_url(config.vault_root, granola_link)
+    if duplicate_path is not None:
+        log_event(
+            command="process",
+            source_url=granola_link,
+            action="skipped_existing_source_url",
+            output_path=str(duplicate_path),
+        )
+        typer.echo(f"Skipped duplicate source_url. Existing note: {duplicate_path}")
+        return
+
+    folder_hint = typer.prompt("Which folder")
+    folder_choice = _resolve_folder_choice(config, folder_hint, no_llm=no_llm)
     exit_code = _run_single_process(
         config=config,
         granola_link=granola_link,
@@ -326,6 +331,16 @@ def models_list_command() -> None:
 
 def _interactive_default_flow(config: AppConfig) -> None:
     granola_link = typer.prompt("Granola meeting link")
+    duplicate_path = _find_existing_note_by_source_url(config.vault_root, granola_link)
+    if duplicate_path is not None:
+        log_event(
+            command="interactive",
+            source_url=granola_link,
+            action="skipped_existing_source_url",
+            output_path=str(duplicate_path),
+        )
+        typer.echo(f"Skipped duplicate source_url. Existing note: {duplicate_path}")
+        return
     folder_choice = _resolve_folder_choice(config, None, no_llm=False, prompt_label="Destination folder")
     exit_code = _run_single_process(
         config=config,
@@ -551,16 +566,6 @@ def _run_single_process(
     command_name: str,
 ) -> int:
     log_event(command=command_name, source_url=granola_link, action="start")
-    existing_path = _find_existing_note_by_source_url(config.vault_root, granola_link)
-    if existing_path is not None:
-        log_event(
-            command=command_name,
-            source_url=granola_link,
-            action="skipped_existing_source_url",
-            output_path=str(existing_path),
-        )
-        typer.echo(f"Skipped duplicate source_url. Existing note: {existing_path}")
-        return 0
     typer.echo("Retrieving transcript...")
 
     try:

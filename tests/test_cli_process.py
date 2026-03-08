@@ -45,7 +45,7 @@ def test_process_new_continues_after_item_failure(tmp_path: Path, monkeypatch) -
 
     monkeypatch.setattr("meeting_agent.cli.process_note_write", _mock_process_note_write)
 
-    result = runner.invoke(app, ["process", "--new", "--folder", "Inbox/Meetings/", "--yes", "--no-llm"])
+    result = runner.invoke(app, ["process", "--new", "--yes", "--no-llm"])
 
     assert result.exit_code == 1
     assert "Batch summary:" in result.output
@@ -75,11 +75,10 @@ def test_process_dry_run_no_llm_outputs_preview(tmp_path: Path, monkeypatch) -> 
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "Inbox/Meetings/",
             "--dry-run",
             "--no-llm",
         ],
+        input="Inbox/Meetings/\n",
     )
 
     assert result.exit_code == 0
@@ -101,18 +100,52 @@ def test_process_skips_when_source_url_already_exists_in_vault(tmp_path: Path, m
         raise AssertionError("retrieve_transcript should not be called for source_url duplicate")
 
     monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", _fail_retrieve)
+    monkeypatch.setattr(
+        "meeting_agent.cli._resolve_folder_choice",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("_resolve_folder_choice should not be called before duplicate short-circuit")
+        ),
+    )
 
     result = runner.invoke(
         app,
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "Inbox/Meetings/",
             "--yes",
         ],
     )
 
+    assert result.exit_code == 0
+    assert "Skipped duplicate source_url. Existing note:" in result.output
+
+
+def test_process_skips_duplicate_before_folder_prompt(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path))
+    existing = tmp_path / "vault" / "Inbox" / "Meetings" / "existing.md"
+    existing.parent.mkdir(parents=True, exist_ok=True)
+    existing.write_text(
+        "---\nsource_url: https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "meeting_agent.cli.retrieve_transcript",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not retrieve duplicate")),
+    )
+    monkeypatch.setattr(
+        "meeting_agent.cli.typer.prompt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not prompt on duplicate")),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+            "--yes",
+        ],
+    )
     assert result.exit_code == 0
     assert "Skipped duplicate source_url. Existing note:" in result.output
 
@@ -141,11 +174,10 @@ def test_process_default_writes_full_transcript_section(tmp_path: Path, monkeypa
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "Inbox/Meetings/",
             "--yes",
             "--no-llm",
         ],
+        input="Inbox/Meetings/\n",
     )
     assert result.exit_code == 0
     note_files = list((tmp_path / "vault" / "Inbox" / "Meetings").glob("*.md"))
@@ -179,12 +211,11 @@ def test_process_summary_mode_omits_full_transcript_section(tmp_path: Path, monk
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "Inbox/Meetings/",
             "--yes",
             "--no-llm",
             "--summary",
         ],
+        input="Inbox/Meetings/\n",
     )
     assert result.exit_code == 0
     note_files = list((tmp_path / "vault" / "Inbox" / "Meetings").glob("*.md"))
@@ -218,11 +249,10 @@ def test_process_folder_hint_resolves_case_insensitive(tmp_path: Path, monkeypat
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "alter mentis/inbox",
             "--yes",
             "--no-llm",
         ],
+        input="alter mentis/inbox\n",
     )
     assert result.exit_code == 0
     assert "Folder resolved: alter mentis/inbox -> Alter Mentis/Inbox/" in result.output
@@ -254,11 +284,10 @@ def test_process_folder_hint_falls_back_to_default_when_no_match(tmp_path: Path,
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "totally missing folder",
             "--yes",
             "--no-llm",
         ],
+        input="totally missing folder\n",
     )
     assert result.exit_code == 0
     assert "Falling back to default: Inbox/Meetings/" in result.output
@@ -293,11 +322,10 @@ def test_process_folder_hint_uses_default_root_prefix(tmp_path: Path, monkeypatc
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "Drata",
             "--yes",
             "--no-llm",
         ],
+        input="Drata\n",
     )
     assert result.exit_code == 0
     assert "Folder resolved: Drata -> Alter Mentis/Drata/" in result.output
@@ -359,10 +387,9 @@ def test_process_local_mode_invokes_server_ensure(tmp_path: Path, monkeypatch) -
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "Inbox/Meetings/",
             "--yes",
         ],
+        input="Inbox/Meetings/\n",
     )
     assert result.exit_code == 0
     assert called["ensure"] is True
@@ -408,11 +435,10 @@ def test_process_no_llm_does_not_invoke_server_ensure(tmp_path: Path, monkeypatc
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "Inbox/Meetings/",
             "--yes",
             "--no-llm",
         ],
+        input="Inbox/Meetings/\n",
     )
     assert result.exit_code == 0
 
@@ -451,10 +477,9 @@ def test_process_llm_schema_failure_falls_back_to_no_llm(tmp_path: Path, monkeyp
         [
             "process",
             "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--folder",
-            "Inbox/Meetings/",
             "--yes",
         ],
+        input="Inbox/Meetings/\n",
     )
     assert result.exit_code == 0
     assert "falling back to deterministic template" in result.output
@@ -474,12 +499,12 @@ def test_process_new_updates_when_staged_hash_changes(tmp_path: Path, monkeypatc
     target = transcripts / "a.txt"
     target.write_text("version one", encoding="utf-8")
 
-    first = runner.invoke(app, ["process", "--new", "--folder", "Inbox/Meetings/", "--yes", "--no-llm"])
+    first = runner.invoke(app, ["process", "--new", "--yes", "--no-llm"])
     assert first.exit_code == 0
     assert "- processed: 1" in first.output
 
     target.write_text("version two", encoding="utf-8")
-    second = runner.invoke(app, ["process", "--new", "--folder", "Inbox/Meetings/", "--yes", "--no-llm"])
+    second = runner.invoke(app, ["process", "--new", "--yes", "--no-llm"])
     assert second.exit_code == 0
     assert "- updated: 1" in second.output
 
