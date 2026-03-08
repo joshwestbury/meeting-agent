@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 meeting-agent = "meeting_agent.cli:app"
+ma = "meeting_agent.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["meeting_agent*"]

@@ -50,7 +50,14 @@ app.add_typer(models_app, name="models")
 
 
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    target_date: str | None = typer.Option(
+        None,
+        "--date",
+        help="Target meeting date in YYYY-MM-DD for default daily flow.",
+    ),
+) -> None:
     """Entry point for meeting-agent CLI."""
     if ctx.invoked_subcommand in {"init", "auth-import"}:
         return
@@ -63,7 +70,11 @@ def main(ctx: typer.Context) -> None:
         raise typer.Exit(code=exit_code_for_error(exc)) from exc
 
     if ctx.invoked_subcommand is None:
-        _interactive_default_flow(config)
+        parsed_date = _parse_target_date(target_date)
+        if parsed_date is None:
+            typer.echo("Invalid --date format. Expected YYYY-MM-DD.")
+            raise typer.Exit(code=3)
+        _interactive_default_flow(config, target_date=parsed_date)
 
 
 @app.command("init")
@@ -238,33 +249,58 @@ def process_day_command(
         typer.echo("Invalid --date format. Expected YYYY-MM-DD.")
         raise typer.Exit(code=3)
 
+    exit_code = _run_process_day(
+        config=config,
+        target_date=parsed_date,
+        yes=yes,
+        dry_run=dry_run,
+        no_llm=no_llm,
+        output_mode=output_mode,
+    )
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
+
+
+def _run_process_day(
+    *,
+    config: AppConfig,
+    target_date: date,
+    yes: bool,
+    dry_run: bool,
+    no_llm: bool,
+    output_mode: str,
+) -> int:
     timezone_name = config.timezone if config.timezone else "local"
     try:
         candidates = list_meetings_for_day(
             config,
-            parsed_date,
+            target_date,
             timezone_name=timezone_name,
         )
     except RetrievalError as exc:
         typer.echo(render_error_message(exc, context="Meeting discovery failed"))
-        raise typer.Exit(code=exit_code_for_error(exc)) from exc
+        return exit_code_for_error(exc)
 
     if not candidates:
-        typer.echo(f"No transcript-ready meetings found for {parsed_date.isoformat()}.")
-        return
+        typer.echo(f"No transcript-ready meetings found for {target_date.isoformat()}.")
+        return 0
 
-    _render_meeting_candidates(candidates, parsed_date)
+    _render_meeting_candidates(candidates, target_date)
     selected_indices = _prompt_candidate_indices(len(candidates))
     if not selected_indices:
         typer.echo("No meetings selected.")
-        return
+        return 0
 
-    folder_choice = _resolve_folder_choice(config, None, no_llm=no_llm)
     processed = 0
     failed = 0
     skipped_existing = 0
     for index in selected_indices:
         candidate = candidates[index]
+        folder_choice = _prompt_day_folder_choice_for_candidate(
+            config,
+            candidate=candidate,
+            no_llm=no_llm,
+        )
         granola_link = candidate.source_url
         duplicate_path = _find_existing_note_by_source_url(config.vault_root, granola_link)
         if duplicate_path is not None:
@@ -298,7 +334,8 @@ def process_day_command(
     typer.echo(f"- skipped_existing_source_url: {skipped_existing}")
     typer.echo(f"- failed: {failed}")
     if failed > 0:
-        raise typer.Exit(code=1)
+        return 1
+    return 0
 
 
 @app.command("open")
@@ -413,28 +450,14 @@ def models_list_command() -> None:
         typer.echo(f"- {path}")
 
 
-def _interactive_default_flow(config: AppConfig) -> None:
-    granola_link = typer.prompt("Granola meeting link")
-    duplicate_path = _find_existing_note_by_source_url(config.vault_root, granola_link)
-    if duplicate_path is not None:
-        log_event(
-            command="interactive",
-            source_url=granola_link,
-            action="skipped_existing_source_url",
-            output_path=str(duplicate_path),
-        )
-        typer.echo(f"Skipped duplicate source_url. Existing note: {duplicate_path}")
-        return
-    folder_choice = _resolve_folder_choice(config, None, no_llm=False, prompt_label="Destination folder")
-    exit_code = _run_single_process(
+def _interactive_default_flow(config: AppConfig, *, target_date: date) -> None:
+    exit_code = _run_process_day(
         config=config,
-        granola_link=granola_link,
-        folder_choice=folder_choice,
-        confirm_write=True,
+        target_date=target_date,
+        yes=False,
         dry_run=False,
         no_llm=False,
         output_mode="full",
-        command_name="interactive",
     )
     if exit_code != 0:
         raise typer.Exit(code=exit_code)
@@ -447,6 +470,27 @@ def _parse_target_date(value: str | None) -> date | None:
         return date.fromisoformat(value.strip())
     except ValueError:
         return None
+
+
+def _prompt_day_folder_choice_for_candidate(
+    config: AppConfig,
+    *,
+    candidate: MeetingCandidate,
+    no_llm: bool,
+) -> str:
+    title = (candidate.title or candidate.meeting_id or "meeting").strip()
+    folder_hint = typer.prompt(f"Which folder should {title} go to?", default="Inbox")
+    resolved = _resolve_folder_hint(config, folder_hint.strip(), no_llm=no_llm) if folder_hint.strip() else None
+    if resolved is not None:
+        return resolved
+
+    inbox_resolved = _resolve_folder_hint(config, "Inbox", no_llm=no_llm)
+    if inbox_resolved is not None:
+        typer.echo(f"Could not match '{folder_hint.strip()}' to a vault folder. Falling back to: {inbox_resolved}")
+        return inbox_resolved
+
+    typer.echo(f"Could not match '{folder_hint.strip()}' to a vault folder. Falling back to: Inbox/")
+    return "Inbox/"
 
 
 def _render_meeting_candidates(candidates: list[MeetingCandidate], target_date: date) -> None:

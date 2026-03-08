@@ -556,35 +556,40 @@ def test_list_meetings_for_day_discovers_and_filters_candidates(
     config = _base_config(tmp_path, "token")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/get-documents"
-        return httpx.Response(
-            200,
-            json={
-                "docs": [
-                    {
-                        "id": "29250e01-0751-4e02-9b24-f6d06f878b04",
-                        "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b04",
-                        "title": "Included",
-                        "started_at": "2026-03-07T09:00:00-06:00",
-                        "has_transcript": True,
-                    },
-                    {
-                        "id": "29250e01-0751-4e02-9b24-f6d06f878b05",
-                        "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b05",
-                        "title": "Wrong day",
-                        "started_at": "2026-03-06T09:00:00-06:00",
-                        "has_transcript": True,
-                    },
-                    {
-                        "id": "29250e01-0751-4e02-9b24-f6d06f878b06",
-                        "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b06",
-                        "title": "No transcript",
-                        "started_at": "2026-03-07T11:00:00-06:00",
-                        "has_transcript": False,
-                    },
-                ]
-            },
-        )
+        if request.url.path == "/v1/get-documents":
+            return httpx.Response(
+                200,
+                json={
+                    "docs": [
+                        {
+                            "id": "29250e01-0751-4e02-9b24-f6d06f878b04",
+                            "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b04",
+                            "title": "Included",
+                            "started_at": "2026-03-07T09:00:00-06:00",
+                            "has_transcript": True,
+                        },
+                        {
+                            "id": "29250e01-0751-4e02-9b24-f6d06f878b05",
+                            "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b05",
+                            "title": "Wrong day",
+                            "started_at": "2026-03-06T09:00:00-06:00",
+                            "has_transcript": True,
+                        },
+                        {
+                            "id": "29250e01-0751-4e02-9b24-f6d06f878b06",
+                            "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b06",
+                            "title": "No transcript",
+                            "started_at": "2026-03-07T11:00:00-06:00",
+                            "has_transcript": False,
+                        },
+                    ]
+                },
+            )
+        if request.url.path == "/v1/get-document-transcript":
+            if "29250e01-0751-4e02-9b24-f6d06f878b06" in request.content.decode("utf-8"):
+                return httpx.Response(404, json={"error": "no transcript"})
+            return httpx.Response(200, json={"transcript_text": "ok"})
+        return httpx.Response(500, json={"error": "unexpected"})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     result = list_meetings_for_day(
@@ -632,6 +637,8 @@ def test_list_meetings_for_day_retries_next_endpoint_on_not_found(
                     ]
                 },
             )
+        if request.url.path == "/v1/get-document-transcript":
+            return httpx.Response(200, json={"transcript_text": "ok"})
         return httpx.Response(500, json={"error": "unexpected"})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -643,5 +650,6 @@ def test_list_meetings_for_day_retries_next_endpoint_on_not_found(
         max_retries=0,
     )
     assert len(result) == 1
-    assert seen_paths == ["/v1/get-documents", "/v1/list-documents"]
+    assert "/v1/get-documents" in seen_paths
+    assert "/v1/list-documents" in seen_paths
     client.close()

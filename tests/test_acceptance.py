@@ -4,6 +4,7 @@ from typer.testing import CliRunner
 
 from meeting_agent.cli import app
 from meeting_agent.config import AppConfig
+from meeting_agent.retrieval import MeetingCandidate
 from meeting_agent.retrieval import RetrievalResult
 
 
@@ -38,20 +39,33 @@ def test_acceptance_interactive_prompts_and_writes_note(tmp_path: Path, monkeypa
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path))
+    monkeypatch.setattr(
+        "meeting_agent.cli.list_meetings_for_day",
+        lambda *_args, **_kwargs: [
+            MeetingCandidate(
+                document_id="29250e01-0751-4e02-9b24-f6d06f878b04",
+                meeting_id="29250e01-0751-4e02-9b24-f6d06f878b04",
+                title="Weekly Sync",
+                started_at="2026-03-01T09:12:00-06:00",
+                has_transcript=True,
+                source_url="https://notes.granola.ai/d/29250e01-0751-4e02-9b24-f6d06f878b04",
+            )
+        ],
+    )
     monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", lambda *_args, **_kwargs: _retrieval_result())
 
     result = runner.invoke(
         app,
         [],
         input=(
-            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04\n"
+            "1\n"
             "Inbox/Meetings/\n"
             "y\n"
         ),
     )
 
     assert result.exit_code == 0
-    notes = list((tmp_path / "vault" / "Inbox" / "Meetings").glob("*.md"))
+    notes = list((tmp_path / "vault").rglob("*.md"))
     assert len(notes) == 1
     assert notes[0].resolve().is_relative_to((tmp_path / "vault").resolve())
 

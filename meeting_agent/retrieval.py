@@ -94,7 +94,7 @@ def list_meetings_for_day(
         timezone_value = _resolve_timezone_name(timezone_name)
         start_at = datetime.combine(target_date, dt_time.min, tzinfo=timezone_value)
         end_at = start_at + timedelta(days=1)
-        response = _request_discovery_payload(
+        discovery_payload = _request_discovery_payload(
             client=http_client,
             headers=headers,
             config=config,
@@ -102,11 +102,17 @@ def list_meetings_for_day(
             window_end=end_at,
             max_retries=max_retries,
         )
-        payload = _parse_json_payload(response)
         candidates = _extract_meeting_candidates(
-            payload=payload,
+            payload=discovery_payload,
             target_date=target_date,
             timezone_name=timezone_name,
+        )
+        candidates = _filter_candidates_with_available_transcripts(
+            candidates=candidates,
+            headers=headers,
+            config=config,
+            client=http_client,
+            max_retries=max_retries,
         )
         candidates.sort(key=lambda item: (item.started_at or "", item.title or "", item.meeting_id))
         return candidates
@@ -238,76 +244,104 @@ def _request_discovery_payload(
     window_start: datetime,
     window_end: datetime,
     max_retries: int,
-) -> httpx.Response:
+) -> dict[str, Any] | list[Any]:
     attempts = max_retries + 1
     refreshed_after_unauthorized = False
     auth_headers = headers
     last_error: RetrievalError | None = None
     endpoints = (
-        ("/v1/get-documents", _build_discovery_payload(window_start, window_end)),
-        ("/v1/list-documents", _build_discovery_payload(window_start, window_end)),
+        "/v1/get-documents",
+        "/v1/list-documents",
     )
+    payloads = _build_discovery_payload_candidates(window_start, window_end)
+    last_non_404_error: RetrievalError | None = None
 
-    for path, payload in endpoints:
-        attempt = 0
-        while attempt < attempts:
-            try:
-                response = client.post(
-                    f"{GRANOLA_API_BASE_URL}{path}",
-                    headers=_granola_client_headers(auth_headers),
-                    json=payload,
-                    timeout=20.0,
-                )
-            except httpx.TransportError as exc:
-                last_error = RetrievalError(NETWORK_ERROR, f"Network error while listing meetings: {exc}")
-                if attempt < attempts - 1:
-                    _retry_pause(attempt)
-                    attempt += 1
-                    continue
-                raise last_error from exc
+    for path in endpoints:
+        for payload in payloads:
+            attempt = 0
+            while attempt < attempts:
+                try:
+                    response = client.post(
+                        f"{GRANOLA_API_BASE_URL}{path}",
+                        headers=_granola_client_headers(auth_headers),
+                        json=payload,
+                        timeout=20.0,
+                    )
+                except httpx.TransportError as exc:
+                    last_error = RetrievalError(NETWORK_ERROR, f"Network error while listing meetings: {exc}")
+                    if attempt < attempts - 1:
+                        _retry_pause(attempt)
+                        attempt += 1
+                        continue
+                    raise last_error from exc
 
-            if response.status_code in (429, 502, 503, 504):
-                code = RATE_LIMITED if response.status_code == 429 else NETWORK_ERROR
-                message = (
-                    "Granola rate limited this request"
-                    if code == RATE_LIMITED
-                    else f"Granola temporary server error: HTTP {response.status_code}"
-                )
-                last_error = RetrievalError(code, message)
-                if attempt < attempts - 1:
-                    _retry_pause(attempt)
-                    attempt += 1
-                    continue
-                raise last_error
+                if response.status_code in (429, 502, 503, 504):
+                    code = RATE_LIMITED if response.status_code == 429 else NETWORK_ERROR
+                    message = (
+                        "Granola rate limited this request"
+                        if code == RATE_LIMITED
+                        else f"Granola temporary server error: HTTP {response.status_code}"
+                    )
+                    last_error = RetrievalError(code, message)
+                    if attempt < attempts - 1:
+                        _retry_pause(attempt)
+                        attempt += 1
+                        continue
+                    raise last_error
 
-            if response.status_code in (401, 403):
-                if config.auth_mode == "desktop_session" and not refreshed_after_unauthorized:
-                    new_creds = refresh_desktop_session_credentials(client=client)
-                    auth_headers = {"Authorization": f"Bearer {new_creds.access_token}"}
-                    refreshed_after_unauthorized = True
-                    continue
-                raise RetrievalError(AUTH_REQUIRED, "Granola authentication failed or expired.")
+                if response.status_code in (401, 403):
+                    if config.auth_mode == "desktop_session" and not refreshed_after_unauthorized:
+                        new_creds = refresh_desktop_session_credentials(client=client)
+                        auth_headers = {"Authorization": f"Bearer {new_creds.access_token}"}
+                        refreshed_after_unauthorized = True
+                        continue
+                    raise RetrievalError(AUTH_REQUIRED, "Granola authentication failed or expired.")
 
-            if response.status_code == 404:
+                if response.status_code == 404:
+                    break
+                if response.status_code >= 400:
+                    last_non_404_error = RetrievalError(
+                        NETWORK_ERROR,
+                        f"Unexpected discovery HTTP error from Granola: {response.status_code}",
+                    )
+                    break
+
+                payload_value = _parse_json_payload(response)
+                if _extract_discovery_docs(payload_value):
+                    return payload_value
+                # Endpoint accepted but this query shape returned no docs; try next shape.
                 break
-            if response.status_code >= 400:
-                break
-            return response
 
     if last_error is not None:
         raise last_error
+    if last_non_404_error is not None:
+        raise last_non_404_error
     raise RetrievalError(
         PARSE_ERROR,
         "Could not discover meetings from Granola API. Run `meeting-agent auth-check <granola_link>` to verify access.",
     )
 
 
-def _build_discovery_payload(window_start: datetime, window_end: datetime) -> dict[str, Any]:
-    return {
-        "started_after": window_start.isoformat(),
-        "started_before": window_end.isoformat(),
-        "include_archived": False,
-    }
+def _build_discovery_payload_candidates(window_start: datetime, window_end: datetime) -> list[dict[str, Any]]:
+    return [
+        {
+            "started_after": window_start.isoformat(),
+            "started_before": window_end.isoformat(),
+            "include_archived": False,
+        },
+        {
+            "start_time": window_start.isoformat(),
+            "end_time": window_end.isoformat(),
+            "include_archived": False,
+        },
+        {
+            "from": window_start.isoformat(),
+            "to": window_end.isoformat(),
+            "include_archived": False,
+        },
+        {"include_archived": False, "limit": 200},
+        {},
+    ]
 
 
 def _extract_meeting_candidates(
@@ -357,10 +391,6 @@ def _doc_to_meeting_candidate(doc: dict[str, Any], timezone_value: tzinfo) -> Me
         return None
 
     started_at = _first_nonempty_str(doc.get("started_at"), doc.get("start_time"), doc.get("created_at"))
-    has_transcript = _doc_has_transcript(doc)
-    if not has_transcript:
-        return None
-
     if started_at:
         parsed = _parse_datetime(started_at)
         if parsed is not None:
@@ -371,9 +401,97 @@ def _doc_to_meeting_candidate(doc: dict[str, Any], timezone_value: tzinfo) -> Me
         meeting_id=meeting_id,
         title=_first_nonempty_str(doc.get("title"), doc.get("name")),
         started_at=started_at,
-        has_transcript=True,
+        has_transcript=_doc_has_transcript(doc),
         source_url=source_url,
     )
+
+
+def _filter_candidates_with_available_transcripts(
+    *,
+    candidates: list[MeetingCandidate],
+    headers: dict[str, str],
+    config: AppConfig,
+    client: httpx.Client,
+    max_retries: int,
+) -> list[MeetingCandidate]:
+    filtered: list[MeetingCandidate] = []
+    for candidate in candidates:
+        if candidate.has_transcript:
+            filtered.append(candidate)
+            continue
+        if _candidate_has_retrievable_transcript(
+            candidate=candidate,
+            headers=headers,
+            config=config,
+            client=client,
+            max_retries=max_retries,
+        ):
+            filtered.append(
+                MeetingCandidate(
+                    document_id=candidate.document_id,
+                    meeting_id=candidate.meeting_id,
+                    title=candidate.title,
+                    started_at=candidate.started_at,
+                    has_transcript=True,
+                    source_url=candidate.source_url,
+                )
+            )
+    return filtered
+
+
+def _candidate_has_retrievable_transcript(
+    *,
+    candidate: MeetingCandidate,
+    headers: dict[str, str],
+    config: AppConfig,
+    client: httpx.Client,
+    max_retries: int,
+) -> bool:
+    attempts = max_retries + 1
+    refreshed_after_unauthorized = False
+    auth_headers = headers
+    candidate_ids = [candidate.document_id]
+    if candidate.meeting_id != candidate.document_id:
+        candidate_ids.append(candidate.meeting_id)
+
+    for document_id in candidate_ids:
+        attempt = 0
+        while attempt < attempts:
+            try:
+                response = client.post(
+                    f"{GRANOLA_API_BASE_URL}/v1/get-document-transcript",
+                    headers=_granola_client_headers(auth_headers),
+                    json={"document_id": document_id},
+                    timeout=20.0,
+                )
+            except httpx.TransportError:
+                return False
+
+            if response.status_code in (401, 403):
+                if config.auth_mode == "desktop_session" and not refreshed_after_unauthorized:
+                    new_creds = refresh_desktop_session_credentials(client=client)
+                    auth_headers = {"Authorization": f"Bearer {new_creds.access_token}"}
+                    refreshed_after_unauthorized = True
+                    continue
+                raise RetrievalError(AUTH_REQUIRED, "Granola authentication failed or expired.")
+            if response.status_code in (429, 502, 503, 504):
+                if attempt < attempts - 1:
+                    _retry_pause(attempt)
+                    attempt += 1
+                    continue
+                return False
+            if response.status_code == 404:
+                break
+            if response.status_code >= 400:
+                return False
+
+            payload = _parse_json_payload(response)
+            try:
+                result = _payload_to_result(payload, candidate.meeting_id)
+            except RetrievalError:
+                return False
+            return bool(result.transcript_text.strip())
+    return False
 
 
 def _doc_has_transcript(doc: dict[str, Any]) -> bool:

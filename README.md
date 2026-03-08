@@ -4,14 +4,24 @@ Local CLI for turning Granola meeting transcripts into structured Obsidian notes
 
 ## Common Command
 
-Process one Granola link and write a note:
+Run the default daily workflow:
 
 ```bash
-uv run meeting-agent process "<granola_link>" --yes
+uv run ma
 ```
 
-- This uses the local model (if configured and running).
-- It writes the note into your configured `vault_root` and folder.
+This will:
+- discover transcript-ready meetings for today
+- let you select meetings (`all` or `1,3-5`)
+- prompt `Which folder`
+- resolve your folder hint and fall back to `Inbox/` if unmatched
+- generate LLM summary and include full transcript by default
+
+Use a custom date:
+
+```bash
+uv run ma --date 2026-03-06
+```
 
 ## Output Modes
 
@@ -29,37 +39,10 @@ uv run meeting-agent process "<granola_link>" --yes --summary
 uv run meeting-agent process "<granola_link>" --yes
 ```
 
-## Shell Shortcut (`ma`)
+## Single Link Command
 
-If you want a shorter command, add this function to your `~/.zshrc`:
-
-```zsh
-ma() {
-  uv run meeting-agent process "$1" --yes "${@:2}"
-}
-```
-
-Reload shell config:
-
-```zsh
-source ~/.zshrc
-```
-
-Verify it is loaded:
-
-```zsh
-type ma
-```
-
-Expected output includes: `ma is a shell function`.
-
-Then use:
+Process one known Granola link directly:
 
 ```bash
-ma "<granola_link>" --summary
-ma "<granola_link>"
+uv run meeting-agent process "<granola_link>" --yes
 ```
-
-Notes:
-- `--summary` is optional because full transcript mode is default.
-- Prefer `ma` (no leading `-`) for reliable zsh behavior.
