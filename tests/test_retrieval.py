@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -8,10 +9,12 @@ from meeting_agent.config import AppConfig
 from meeting_agent.errors import RetrievalError
 from meeting_agent.retrieval import (
     AUTH_REQUIRED,
+    MeetingCandidate,
     NETWORK_ERROR,
     NOT_FOUND,
     PARSE_ERROR,
     RATE_LIMITED,
+    list_meetings_for_day,
     retrieve_transcript,
 )
 
@@ -543,4 +546,102 @@ def test_retrieve_transcript_enriches_title_from_documents_batch_when_segments_o
     assert result.transcript_text == "first line\nsecond line"
     assert result.title == "[Internal] Dialpad CPQ / Integration Sync"
     assert result.started_at == "2026-03-06T18:30:57.148Z"
+    client.close()
+
+
+def test_list_meetings_for_day_discovers_and_filters_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MEETING_AGENT_TOKEN", "secret")
+    config = _base_config(tmp_path, "token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/get-documents"
+        return httpx.Response(
+            200,
+            json={
+                "docs": [
+                    {
+                        "id": "29250e01-0751-4e02-9b24-f6d06f878b04",
+                        "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b04",
+                        "title": "Included",
+                        "started_at": "2026-03-07T09:00:00-06:00",
+                        "has_transcript": True,
+                    },
+                    {
+                        "id": "29250e01-0751-4e02-9b24-f6d06f878b05",
+                        "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b05",
+                        "title": "Wrong day",
+                        "started_at": "2026-03-06T09:00:00-06:00",
+                        "has_transcript": True,
+                    },
+                    {
+                        "id": "29250e01-0751-4e02-9b24-f6d06f878b06",
+                        "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b06",
+                        "title": "No transcript",
+                        "started_at": "2026-03-07T11:00:00-06:00",
+                        "has_transcript": False,
+                    },
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = list_meetings_for_day(
+        config,
+        date(2026, 3, 7),
+        timezone_name="America/Chicago",
+        client=client,
+        max_retries=0,
+    )
+    assert result == [
+        MeetingCandidate(
+            document_id="29250e01-0751-4e02-9b24-f6d06f878b04",
+            meeting_id="29250e01-0751-4e02-9b24-f6d06f878b04",
+            title="Included",
+            started_at="2026-03-07T09:00:00-06:00",
+            has_transcript=True,
+            source_url="https://notes.granola.ai/d/29250e01-0751-4e02-9b24-f6d06f878b04",
+        )
+    ]
+    client.close()
+
+
+def test_list_meetings_for_day_retries_next_endpoint_on_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MEETING_AGENT_TOKEN", "secret")
+    config = _base_config(tmp_path, "token")
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        if request.url.path == "/v1/get-documents":
+            return httpx.Response(404, json={"error": "missing"})
+        if request.url.path == "/v1/list-documents":
+            return httpx.Response(
+                200,
+                json={
+                    "documents": [
+                        {
+                            "id": "29250e01-0751-4e02-9b24-f6d06f878b04",
+                            "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b04",
+                            "started_at": "2026-03-07T09:00:00-06:00",
+                            "has_transcript": True,
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(500, json={"error": "unexpected"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = list_meetings_for_day(
+        config,
+        date(2026, 3, 7),
+        timezone_name="America/Chicago",
+        client=client,
+        max_retries=0,
+    )
+    assert len(result) == 1
+    assert seen_paths == ["/v1/get-documents", "/v1/list-documents"]
     client.close()

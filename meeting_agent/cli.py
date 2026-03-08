@@ -39,7 +39,7 @@ from meeting_agent.logging import log_event
 from meeting_agent.normalize import compute_source_key, compute_transcript_hash, normalize_transcript_text
 from meeting_agent.pipeline import process_note_write, resolve_output_path
 from meeting_agent.links import parse_granola_link
-from meeting_agent.retrieval import retrieve_transcript
+from meeting_agent.retrieval import MeetingCandidate, list_meetings_for_day, retrieve_transcript
 from meeting_agent.staging import stage_transcript
 from meeting_agent.state import StateEntry, load_state
 from meeting_agent.writer import RenderContext, build_note_filename
@@ -217,6 +217,90 @@ def process_command(
         raise typer.Exit(code=exit_code)
 
 
+@app.command("process-day")
+def process_day_command(
+    target_date: str | None = typer.Option(
+        None,
+        "--date",
+        help="Target meeting date in YYYY-MM-DD. Defaults to today.",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Skip write confirmation prompt."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show resolved output, do not write/state update."),
+    no_llm: bool = typer.Option(False, "--no-llm", help="Bypass LLM and use deterministic template."),
+    summary: bool = typer.Option(False, "--summary", help="Write summary-only note format."),
+) -> None:
+    """Discover meetings with transcripts for a day and process selected items."""
+    config = load_and_validate_startup_config()
+    output_mode = "summary" if summary else "full"
+
+    parsed_date = _parse_target_date(target_date)
+    if parsed_date is None:
+        typer.echo("Invalid --date format. Expected YYYY-MM-DD.")
+        raise typer.Exit(code=3)
+
+    timezone_name = config.timezone if config.timezone else "local"
+    try:
+        candidates = list_meetings_for_day(
+            config,
+            parsed_date,
+            timezone_name=timezone_name,
+        )
+    except RetrievalError as exc:
+        typer.echo(render_error_message(exc, context="Meeting discovery failed"))
+        raise typer.Exit(code=exit_code_for_error(exc)) from exc
+
+    if not candidates:
+        typer.echo(f"No transcript-ready meetings found for {parsed_date.isoformat()}.")
+        return
+
+    _render_meeting_candidates(candidates, parsed_date)
+    selected_indices = _prompt_candidate_indices(len(candidates))
+    if not selected_indices:
+        typer.echo("No meetings selected.")
+        return
+
+    folder_choice = _resolve_folder_choice(config, None, no_llm=no_llm)
+    processed = 0
+    failed = 0
+    skipped_existing = 0
+    for index in selected_indices:
+        candidate = candidates[index]
+        granola_link = candidate.source_url
+        duplicate_path = _find_existing_note_by_source_url(config.vault_root, granola_link)
+        if duplicate_path is not None:
+            skipped_existing += 1
+            log_event(
+                command="process_day",
+                source_url=granola_link,
+                action="skipped_existing_source_url",
+                output_path=str(duplicate_path),
+            )
+            typer.echo(f"Skipped duplicate source_url. Existing note: {duplicate_path}")
+            continue
+        exit_code = _run_single_process(
+            config=config,
+            granola_link=granola_link,
+            folder_choice=folder_choice,
+            confirm_write=not yes,
+            dry_run=dry_run,
+            no_llm=no_llm,
+            output_mode=output_mode,
+            command_name="process_day",
+        )
+        if exit_code == 0:
+            processed += 1
+        else:
+            failed += 1
+
+    typer.echo("Day processing summary:")
+    typer.echo(f"- selected: {len(selected_indices)}")
+    typer.echo(f"- processed: {processed}")
+    typer.echo(f"- skipped_existing_source_url: {skipped_existing}")
+    typer.echo(f"- failed: {failed}")
+    if failed > 0:
+        raise typer.Exit(code=1)
+
+
 @app.command("open")
 def open_command(
     latest: bool = typer.Option(False, "--latest", help="Open the latest successfully written note.")
@@ -354,6 +438,66 @@ def _interactive_default_flow(config: AppConfig) -> None:
     )
     if exit_code != 0:
         raise typer.Exit(code=exit_code)
+
+
+def _parse_target_date(value: str | None) -> date | None:
+    if value is None or not value.strip():
+        return date.today()
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def _render_meeting_candidates(candidates: list[MeetingCandidate], target_date: date) -> None:
+    typer.echo(f"Transcript-ready meetings for {target_date.isoformat()}:")
+    for index, candidate in enumerate(candidates, start=1):
+        title = candidate.title or "Untitled meeting"
+        started_label = candidate.started_at or "unknown time"
+        typer.echo(f"{index}. {started_label} | {title} | {candidate.meeting_id}")
+
+
+def _prompt_candidate_indices(total_candidates: int) -> list[int]:
+    while True:
+        raw_selection = typer.prompt("Select meetings to process (`all` or `1,3-5`)")
+        parsed = _parse_candidate_selection(raw_selection, total_candidates)
+        if parsed is not None:
+            return parsed
+        typer.echo("Invalid selection. Use `all` or comma-separated numbers/ranges like `1,3-5`.")
+
+
+def _parse_candidate_selection(value: str, total_candidates: int) -> list[int] | None:
+    cleaned = value.strip().lower()
+    if not cleaned:
+        return []
+    if cleaned == "all":
+        return list(range(total_candidates))
+
+    selected: set[int] = set()
+    for chunk in cleaned.split(","):
+        part = chunk.strip()
+        if not part:
+            return None
+        if "-" in part:
+            pieces = part.split("-", 1)
+            if len(pieces) != 2 or not pieces[0].isdigit() or not pieces[1].isdigit():
+                return None
+            start = int(pieces[0])
+            end = int(pieces[1])
+            if start <= 0 or end <= 0 or end < start:
+                return None
+            if end > total_candidates:
+                return None
+            for idx in range(start, end + 1):
+                selected.add(idx - 1)
+            continue
+        if not part.isdigit():
+            return None
+        idx = int(part)
+        if idx <= 0 or idx > total_candidates:
+            return None
+        selected.add(idx - 1)
+    return sorted(selected)
 
 
 def _resolve_folder_choice(

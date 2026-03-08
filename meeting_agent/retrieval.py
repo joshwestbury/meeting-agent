@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date, datetime, time as dt_time, timedelta, tzinfo
 import os
 import time
 from typing import Any
@@ -35,6 +36,16 @@ class RetrievalResult:
     raw_payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class MeetingCandidate:
+    document_id: str
+    meeting_id: str
+    title: str | None
+    started_at: str | None
+    has_transcript: bool
+    source_url: str
+
+
 def retrieve_transcript(
     source_url: str,
     config: AppConfig,
@@ -57,6 +68,48 @@ def retrieve_transcript(
             http_client,
             max_retries,
         )
+    finally:
+        if created_client:
+            http_client.close()
+
+
+def list_meetings_for_day(
+    config: AppConfig,
+    target_date: date,
+    *,
+    timezone_name: str = "local",
+    client: httpx.Client | None = None,
+    max_retries: int = 1,
+) -> list[MeetingCandidate]:
+    if config.auth_mode == "manual_export":
+        raise RetrievalError(
+            PARSE_ERROR,
+            "Meeting discovery requires remote auth mode (`token`, `cookie`, or `desktop_session`).",
+        )
+
+    created_client = client is None
+    http_client = client or httpx.Client()
+    try:
+        headers = _build_auth_headers(config)
+        timezone_value = _resolve_timezone_name(timezone_name)
+        start_at = datetime.combine(target_date, dt_time.min, tzinfo=timezone_value)
+        end_at = start_at + timedelta(days=1)
+        response = _request_discovery_payload(
+            client=http_client,
+            headers=headers,
+            config=config,
+            window_start=start_at,
+            window_end=end_at,
+            max_retries=max_retries,
+        )
+        payload = _parse_json_payload(response)
+        candidates = _extract_meeting_candidates(
+            payload=payload,
+            target_date=target_date,
+            timezone_name=timezone_name,
+        )
+        candidates.sort(key=lambda item: (item.started_at or "", item.title or "", item.meeting_id))
+        return candidates
     finally:
         if created_client:
             http_client.close()
@@ -175,6 +228,207 @@ def _retrieve_remote(
     if last_error is not None:
         raise last_error
     raise RetrievalError(NETWORK_ERROR, "Unknown retrieval failure")
+
+
+def _request_discovery_payload(
+    *,
+    client: httpx.Client,
+    headers: dict[str, str],
+    config: AppConfig,
+    window_start: datetime,
+    window_end: datetime,
+    max_retries: int,
+) -> httpx.Response:
+    attempts = max_retries + 1
+    refreshed_after_unauthorized = False
+    auth_headers = headers
+    last_error: RetrievalError | None = None
+    endpoints = (
+        ("/v1/get-documents", _build_discovery_payload(window_start, window_end)),
+        ("/v1/list-documents", _build_discovery_payload(window_start, window_end)),
+    )
+
+    for path, payload in endpoints:
+        attempt = 0
+        while attempt < attempts:
+            try:
+                response = client.post(
+                    f"{GRANOLA_API_BASE_URL}{path}",
+                    headers=_granola_client_headers(auth_headers),
+                    json=payload,
+                    timeout=20.0,
+                )
+            except httpx.TransportError as exc:
+                last_error = RetrievalError(NETWORK_ERROR, f"Network error while listing meetings: {exc}")
+                if attempt < attempts - 1:
+                    _retry_pause(attempt)
+                    attempt += 1
+                    continue
+                raise last_error from exc
+
+            if response.status_code in (429, 502, 503, 504):
+                code = RATE_LIMITED if response.status_code == 429 else NETWORK_ERROR
+                message = (
+                    "Granola rate limited this request"
+                    if code == RATE_LIMITED
+                    else f"Granola temporary server error: HTTP {response.status_code}"
+                )
+                last_error = RetrievalError(code, message)
+                if attempt < attempts - 1:
+                    _retry_pause(attempt)
+                    attempt += 1
+                    continue
+                raise last_error
+
+            if response.status_code in (401, 403):
+                if config.auth_mode == "desktop_session" and not refreshed_after_unauthorized:
+                    new_creds = refresh_desktop_session_credentials(client=client)
+                    auth_headers = {"Authorization": f"Bearer {new_creds.access_token}"}
+                    refreshed_after_unauthorized = True
+                    continue
+                raise RetrievalError(AUTH_REQUIRED, "Granola authentication failed or expired.")
+
+            if response.status_code == 404:
+                break
+            if response.status_code >= 400:
+                break
+            return response
+
+    if last_error is not None:
+        raise last_error
+    raise RetrievalError(
+        PARSE_ERROR,
+        "Could not discover meetings from Granola API. Run `meeting-agent auth-check <granola_link>` to verify access.",
+    )
+
+
+def _build_discovery_payload(window_start: datetime, window_end: datetime) -> dict[str, Any]:
+    return {
+        "started_after": window_start.isoformat(),
+        "started_before": window_end.isoformat(),
+        "include_archived": False,
+    }
+
+
+def _extract_meeting_candidates(
+    *,
+    payload: dict[str, Any] | list[Any],
+    target_date: date,
+    timezone_name: str,
+) -> list[MeetingCandidate]:
+    docs = _extract_discovery_docs(payload)
+    timezone_value = _resolve_timezone_name(timezone_name)
+    candidates: list[MeetingCandidate] = []
+    for doc in docs:
+        candidate = _doc_to_meeting_candidate(doc, timezone_value)
+        if candidate is None:
+            continue
+        if candidate.started_at is None:
+            continue
+        started_at = _parse_datetime(candidate.started_at)
+        if started_at is None:
+            continue
+        if started_at.astimezone(timezone_value).date() != target_date:
+            continue
+        candidates.append(candidate)
+    return candidates
+
+
+def _extract_discovery_docs(payload: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("docs", "documents", "results", "items"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _doc_to_meeting_candidate(doc: dict[str, Any], timezone_value: tzinfo) -> MeetingCandidate | None:
+    meeting_id = _first_nonempty_str(doc.get("meeting_id"), doc.get("id"), doc.get("document_id"))
+    if not meeting_id:
+        return None
+    source_url = f"https://notes.granola.ai/d/{meeting_id}"
+    try:
+        parse_granola_link(source_url)
+    except LinkValidationError:
+        return None
+
+    started_at = _first_nonempty_str(doc.get("started_at"), doc.get("start_time"), doc.get("created_at"))
+    has_transcript = _doc_has_transcript(doc)
+    if not has_transcript:
+        return None
+
+    if started_at:
+        parsed = _parse_datetime(started_at)
+        if parsed is not None:
+            started_at = parsed.astimezone(timezone_value).isoformat()
+
+    return MeetingCandidate(
+        document_id=_first_nonempty_str(doc.get("id"), doc.get("document_id"), meeting_id) or meeting_id,
+        meeting_id=meeting_id,
+        title=_first_nonempty_str(doc.get("title"), doc.get("name")),
+        started_at=started_at,
+        has_transcript=True,
+        source_url=source_url,
+    )
+
+
+def _doc_has_transcript(doc: dict[str, Any]) -> bool:
+    for key in ("has_transcript", "transcript_available", "hasTranscript", "is_transcribed"):
+        value = doc.get(key)
+        if isinstance(value, bool):
+            return value
+    text = doc.get("transcript_text") or doc.get("transcript")
+    if isinstance(text, str) and text.strip():
+        return True
+    segments = doc.get("transcript_segments")
+    if isinstance(segments, list) and bool(segments):
+        return True
+    status = doc.get("transcript_status")
+    if isinstance(status, str) and status.strip().casefold() in {"ready", "completed", "available"}:
+        return True
+    return False
+
+
+def _first_nonempty_str(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed
+
+
+def _resolve_timezone_name(timezone_name: str) -> tzinfo:
+    local_timezone = datetime.now().astimezone().tzinfo
+    if local_timezone is None:  # pragma: no cover
+        from datetime import timezone
+
+        local_timezone = timezone.utc
+    if timezone_name == "local":
+        return local_timezone
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(timezone_name)
+    except Exception:
+        return local_timezone
 
 
 def _retry_pause(attempt: int) -> None:
