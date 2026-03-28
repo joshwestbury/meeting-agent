@@ -6,6 +6,7 @@ from meeting_agent.config import (
     AppConfig,
     get_config_path,
     load_and_validate_startup_config,
+    load_config,
     save_config,
     validate_init_config,
 )
@@ -15,6 +16,36 @@ from meeting_agent.errors import ConfigError
 def test_get_config_path_uses_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     assert get_config_path() == tmp_path / ".config" / "meeting-agent" / "config.toml"
+
+
+def test_load_startup_config_promotes_none_llm_mode_to_local(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    vault_root.mkdir()
+    staging_root = tmp_path / "staging"
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "\n".join(
+            [
+                f'vault_root = "{vault_root}"',
+                f'staging_root = "{staging_root}"',
+                'auth_mode = "manual_export"',
+                'llm_mode = "none"',
+                'llm_runtime = "llama.cpp"',
+                'llm_model = "LiquidAI/LFM2-2.6B-Transcript-GGUF"',
+                'llm_model_variant = "Q4_K_M"',
+                'llm_server_url = "http://127.0.0.1:8080"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.warns(UserWarning, match="llm_mode was 'none'"):
+        loaded = load_and_validate_startup_config(path)
+
+    assert loaded.llm_mode == "local"
+    assert load_and_validate_startup_config(path).llm_mode == "local"
+    assert load_config(path).llm_mode == "local"
 
 
 def test_save_and_load_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

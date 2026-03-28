@@ -1,4 +1,5 @@
 import os
+import warnings
 from pathlib import Path
 import tempfile
 import tomllib
@@ -180,6 +181,15 @@ def validate_init_config(config: AppConfig) -> None:
 
 
 def load_and_validate_startup_config(path: Path | None = None) -> AppConfig:
+    config_path = path or get_config_path()
     config = load_config(path)
+    if config.llm_mode == "none":
+        config = config.model_copy(update={"llm_mode": "local"})
+        save_config(config, path=config_path)
+        warnings.warn(
+            "llm_mode was 'none' in config; updated to 'local' and saved.",
+            UserWarning,
+            stacklevel=2,
+        )
     validate_init_config(config)
     return config
