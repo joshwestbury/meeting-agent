@@ -152,12 +152,9 @@ def run_models_doctor(
 
 
 def _check_server_reachable(server_url: str) -> bool:
-    endpoint = f"{server_url.rstrip('/')}/v1/models"
-    try:
-        response = httpx.get(endpoint, timeout=5.0)
-    except httpx.HTTPError:
-        return False
-    return response.status_code < 400
+    from meeting_agent.llm import llm_openai_runtime_health_ok
+
+    return llm_openai_runtime_health_ok(server_url, timeout=5.0)
 
 
 def model_size_guidance(repo_id: str) -> str:

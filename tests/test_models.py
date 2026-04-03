@@ -99,7 +99,10 @@ def test_run_models_doctor_reports_status(tmp_path: Path, monkeypatch: pytest.Mo
     model_path.write_bytes(b"data")
 
     monkeypatch.setattr("meeting_agent.models.shutil.which", lambda _: "/usr/local/bin/llama-server")
-    monkeypatch.setattr("meeting_agent.models.httpx.get", lambda *_args, **_kwargs: httpx.Response(200, json={}))
+    monkeypatch.setattr(
+        "meeting_agent.llm.httpx.get",
+        lambda *_args, **_kwargs: httpx.Response(200, json={"object": "list", "data": []}),
+    )
 
     report = run_models_doctor(
         model_cache_dir=tmp_path,

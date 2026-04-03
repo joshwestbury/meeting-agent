@@ -8,7 +8,6 @@ import shutil
 import time
 from urllib.parse import urlparse, urlunparse
 
-import httpx
 import typer
 import yaml
 
@@ -34,6 +33,7 @@ from meeting_agent.llm import (
     build_no_llm_payload,
     choose_candidate_folder_with_local_runtime,
     generate_note_payload_with_local_runtime,
+    llm_openai_runtime_health_ok,
 )
 from meeting_agent.logging import log_event
 from meeting_agent.normalize import compute_source_key, compute_transcript_hash, normalize_transcript_text
@@ -184,6 +184,8 @@ def process_command(
     output_mode = "summary" if summary else "full"
 
     if process_new:
+        if not dry_run:
+            _session_ensure_local_llm_if_needed(config, no_llm=no_llm)
         folder_choice = _resolve_folder_choice(config, None, no_llm=no_llm)
         exit_code = _run_batch_process_new(
             config=config,
@@ -212,6 +214,7 @@ def process_command(
         typer.echo(f"Skipped duplicate source_url. Existing note: {duplicate_path}")
         return
 
+    _session_ensure_local_llm_if_needed(config, no_llm=no_llm)
     folder_hint = typer.prompt("Which folder")
     folder_choice = _resolve_folder_choice(config, folder_hint, no_llm=no_llm)
     exit_code = _run_single_process(
@@ -285,6 +288,7 @@ def _run_process_day(
         typer.echo(f"No transcript-ready meetings found for {target_date.isoformat()}.")
         return 0
 
+    _session_ensure_local_llm_if_needed(config, no_llm=no_llm)
     _render_meeting_candidates(candidates, target_date)
     selected_indices = _prompt_candidate_indices(len(candidates))
     if not selected_indices:
@@ -795,12 +799,10 @@ def _run_single_process(
             )
         else:
             reason = "llm"
-            _ensure_local_llm_server(config)
-            payload = generate_note_payload_with_local_runtime(
-                normalized_text,
-                [folder_choice],
-                model=config.llm_model,
-                server_url=config.llm_server_url,
+            payload = _generate_payload_with_local_llm_resilient(
+                config=config,
+                transcript_text=normalized_text,
+                folder_choice=folder_choice,
             )
     except SchemaValidationError as exc:
         if not (no_llm or config.llm_mode == "none"):
@@ -1078,12 +1080,10 @@ def _run_batch_process_new(
                     tags=["meeting", "staged"],
                 )
             else:
-                _ensure_local_llm_server(config)
-                payload = generate_note_payload_with_local_runtime(
-                    normalized,
-                    [folder_choice],
-                    model=config.llm_model,
-                    server_url=config.llm_server_url,
+                payload = _generate_payload_with_local_llm_resilient(
+                    config=config,
+                    transcript_text=normalized,
+                    folder_choice=folder_choice,
                 )
         except SchemaValidationError as exc:
             if no_llm or config.llm_mode == "none":
@@ -1205,9 +1205,19 @@ def _title_from_meeting_id(meeting_id: str) -> str:
     return cleaned if cleaned else "Meeting Notes"
 
 
+def _session_ensure_local_llm_if_needed(config: AppConfig, *, no_llm: bool) -> None:
+    if no_llm or config.llm_mode != "local":
+        return
+    _ensure_local_llm_server(config)
+
+
 def _ensure_local_llm_server(config: AppConfig) -> None:
     if _is_server_reachable(config.llm_server_url):
         return
+
+    typer.echo(
+        f"Local LLM not responding at {config.llm_server_url}; starting llama-server…",
+    )
 
     runtime_path = shutil.which("llama-server")
     if not runtime_path:
@@ -1246,19 +1256,42 @@ def _ensure_local_llm_server(config: AppConfig) -> None:
     except OSError as exc:
         raise SchemaValidationError(f"Could not start local LLM server: {exc}") from exc
 
-    if not _wait_for_server(config.llm_server_url, timeout_seconds=45.0):
+    if not _wait_for_server(config.llm_server_url, timeout_seconds=120.0):
         raise SchemaValidationError(
             f"Local LLM server did not become ready at {config.llm_server_url}. Start it manually and retry."
+        )
+    typer.echo("Local LLM server is ready.")
+
+
+def _generate_payload_with_local_llm_resilient(
+    *,
+    config: AppConfig,
+    transcript_text: str,
+    folder_choice: str,
+):
+    _ensure_local_llm_server(config)
+    try:
+        return generate_note_payload_with_local_runtime(
+            transcript_text,
+            [folder_choice],
+            model=config.llm_model,
+            server_url=config.llm_server_url,
+        )
+    except SchemaValidationError as exc:
+        # If the runtime dropped between readiness check and request, restart/reattach once.
+        if "Local LLM server request failed" not in str(exc):
+            raise
+        _ensure_local_llm_server(config)
+        return generate_note_payload_with_local_runtime(
+            transcript_text,
+            [folder_choice],
+            model=config.llm_model,
+            server_url=config.llm_server_url,
         )
 
 
 def _is_server_reachable(server_url: str) -> bool:
-    endpoint = f"{server_url.rstrip('/')}/v1/models"
-    try:
-        response = httpx.get(endpoint, timeout=2.0)
-    except httpx.HTTPError:
-        return False
-    return response.status_code < 400
+    return llm_openai_runtime_health_ok(server_url, timeout=2.0)
 
 
 def _wait_for_server(server_url: str, *, timeout_seconds: float) -> bool:

@@ -13,6 +13,29 @@ from meeting_agent.note_schema import (
     validate_note_length,
 )
 
+_LOCAL_LLM_CHAT_TIMEOUT_SECONDS = 90.0
+_LOCAL_LLM_FOLDER_TIMEOUT_SECONDS = 45.0
+_LOCAL_LLM_RETRY_ATTEMPTS = 2
+
+
+def llm_openai_runtime_health_ok(server_url: str, *, timeout: float = 2.0) -> bool:
+    """True if ``/v1/models`` responds like an OpenAI-compatible listing (e.g. llama-server)."""
+    endpoint = f"{server_url.rstrip('/')}/v1/models"
+    try:
+        response = httpx.get(endpoint, timeout=timeout)
+    except httpx.HTTPError:
+        return False
+    if response.status_code >= 400:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    return isinstance(data, list)
+
 
 def build_no_llm_payload(
     *,
@@ -118,10 +141,13 @@ def choose_candidate_folder_with_local_runtime(
     created_client = client is None
     http_client = client or httpx.Client()
     try:
-        try:
-            response = http_client.post(endpoint, json=payload, timeout=20.0)
-        except httpx.TransportError as exc:
-            raise SchemaValidationError(f"Local LLM server request failed: {exc}") from exc
+        response = _post_with_retries(
+            http_client,
+            endpoint,
+            payload,
+            timeout_seconds=_LOCAL_LLM_FOLDER_TIMEOUT_SECONDS,
+            attempts=_LOCAL_LLM_RETRY_ATTEMPTS,
+        )
 
         if response.status_code >= 400:
             raise SchemaValidationError(
@@ -166,10 +192,13 @@ def call_local_llama_server(
     created_client = client is None
     http_client = client or httpx.Client()
     try:
-        try:
-            response = http_client.post(endpoint, json=payload, timeout=30.0)
-        except httpx.TransportError as exc:
-            raise SchemaValidationError(f"Local LLM server request failed: {exc}") from exc
+        response = _post_with_retries(
+            http_client,
+            endpoint,
+            payload,
+            timeout_seconds=_LOCAL_LLM_CHAT_TIMEOUT_SECONDS,
+            attempts=_LOCAL_LLM_RETRY_ATTEMPTS,
+        )
 
         if response.status_code >= 400:
             raise SchemaValidationError(
@@ -257,6 +286,31 @@ def _extract_folder_index(content: str, *, max_index: int) -> int:
             f"Local LLM folder-selection index out of range: {index} (1-{max_index})"
         )
     return index
+
+
+def _post_with_retries(
+    client: httpx.Client,
+    endpoint: str,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: float,
+    attempts: int,
+) -> httpx.Response:
+    last_exc: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            return client.post(endpoint, json=payload, timeout=timeout_seconds)
+        except httpx.TimeoutException as exc:
+            last_exc = exc
+            if attempt >= attempts:
+                raise SchemaValidationError(
+                    f"Local LLM server request failed: timed out after {timeout_seconds:.0f}s "
+                    f"(attempted {attempts} times)"
+                ) from exc
+        except httpx.TransportError as exc:
+            raise SchemaValidationError(f"Local LLM server request failed: {exc}") from exc
+
+    raise SchemaValidationError(f"Local LLM server request failed: {last_exc}")
 
 
 def _coerce_folder_choice_to_candidate(note: NotePayload, candidate_folders: list[str]) -> NotePayload:
