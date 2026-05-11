@@ -15,6 +15,7 @@ from meeting_agent.note_schema import (
 
 _LOCAL_LLM_CHAT_TIMEOUT_SECONDS = 90.0
 _LOCAL_LLM_FOLDER_TIMEOUT_SECONDS = 45.0
+_LOCAL_LLM_READY_TIMEOUT_SECONDS = 120.0
 _LOCAL_LLM_RETRY_ATTEMPTS = 2
 
 
@@ -158,6 +159,51 @@ def choose_candidate_folder_with_local_runtime(
         selection_raw = _extract_message_content(data)
         index = _extract_folder_index(selection_raw, max_index=len(candidate_folders))
         return candidate_folders[index - 1]
+    finally:
+        if created_client:
+            http_client.close()
+
+
+def probe_local_llama_server(
+    *,
+    model: str,
+    server_url: str,
+    client: httpx.Client | None = None,
+) -> None:
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Reply with OK only.",
+            },
+            {"role": "user", "content": "ping"},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 8,
+    }
+
+    endpoint = f"{server_url.rstrip('/')}/v1/chat/completions"
+    created_client = client is None
+    http_client = client or httpx.Client()
+    try:
+        response = _post_with_retries(
+            http_client,
+            endpoint,
+            payload,
+            timeout_seconds=_LOCAL_LLM_READY_TIMEOUT_SECONDS,
+            attempts=1,
+        )
+
+        if response.status_code >= 400:
+            raise SchemaValidationError(
+                f"Local LLM server readiness probe returned HTTP {response.status_code}"
+            )
+
+        data = _parse_runtime_json(response)
+        content = _extract_message_content(data)
+        if not content.strip():
+            raise SchemaValidationError("Local LLM server readiness probe returned empty content")
     finally:
         if created_client:
             http_client.close()

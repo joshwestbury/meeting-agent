@@ -8,6 +8,7 @@ from meeting_agent.llm import (
     choose_candidate_folder_with_local_runtime,
     generate_note_payload_with_local_runtime,
     generate_note_payload_with_llm,
+    probe_local_llama_server,
 )
 
 
@@ -270,6 +271,22 @@ def test_generate_note_payload_with_local_runtime_coerces_bad_meeting_date() -> 
     assert note.meeting_date
     assert len(note.meeting_date) == 10
     assert note.summary == "Summary"
+    client.close()
+
+
+def test_probe_local_llama_server_accepts_non_empty_completion() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "OK"}}]},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    probe_local_llama_server(
+        model="LiquidAI/LFM2-2.6B-Transcript-GGUF",
+        server_url="http://127.0.0.1:8080",
+        client=client,
+    )
     client.close()
 
 

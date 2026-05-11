@@ -333,7 +333,7 @@ def test_process_folder_hint_uses_default_root_prefix(tmp_path: Path, monkeypatc
     assert len(note_files) == 1
 
 
-def test_process_local_mode_invokes_server_ensure(tmp_path: Path, monkeypatch) -> None:
+def test_process_local_mode_invokes_generation_ready_check(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     home = tmp_path / "home"
     home.mkdir()
@@ -359,7 +359,7 @@ def test_process_local_mode_invokes_server_ensure(tmp_path: Path, monkeypatch) -
     def _mock_ensure(_: AppConfig) -> None:
         called["ensure"] = True
 
-    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_server", _mock_ensure)
+    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_generation_ready", _mock_ensure)
 
     from meeting_agent.note_schema import NotePayload
 
@@ -406,44 +406,7 @@ def test_process_local_mode_invokes_server_ensure(tmp_path: Path, monkeypatch) -
     ]
 
 
-def test_process_no_llm_does_not_invoke_server_ensure(tmp_path: Path, monkeypatch) -> None:
-    runner = CliRunner()
-    config = _config(tmp_path)
-    config.llm_mode = "local"
-    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: config)
-
-    def _mock_retrieve(_: str, __: AppConfig, client=None, max_retries: int = 2) -> RetrievalResult:
-        return RetrievalResult(
-            granola_id="g1",
-            meeting_id="29250e01-0751-4e02-9b24-f6d06f878b04",
-            title="Weekly Sync",
-            started_at="2026-03-01T09:12:00-06:00",
-            attendees=[],
-            transcript_text="Speaker A: hello",
-            raw_payload={},
-        )
-
-    monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", _mock_retrieve)
-
-    def _fail_ensure(_: AppConfig) -> None:
-        raise AssertionError("should not be called in --no-llm mode")
-
-    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_server", _fail_ensure)
-
-    result = runner.invoke(
-        app,
-        [
-            "process",
-            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
-            "--yes",
-            "--no-llm",
-        ],
-        input="Inbox/Meetings/\n",
-    )
-    assert result.exit_code == 0
-
-
-def test_process_llm_schema_failure_falls_back_to_no_llm(tmp_path: Path, monkeypatch) -> None:
+def test_process_no_llm_does_not_invoke_generation_ready_check(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     home = tmp_path / "home"
     home.mkdir()
@@ -464,7 +427,47 @@ def test_process_llm_schema_failure_falls_back_to_no_llm(tmp_path: Path, monkeyp
         )
 
     monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", _mock_retrieve)
-    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_server", lambda _config: None)
+
+    def _fail_ensure(_: AppConfig) -> None:
+        raise AssertionError("should not be called in --no-llm mode")
+
+    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_generation_ready", _fail_ensure)
+
+    result = runner.invoke(
+        app,
+        [
+            "process",
+            "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+            "--yes",
+            "--no-llm",
+        ],
+        input="Inbox/Meetings/\n",
+    )
+    assert result.exit_code == 0
+
+
+def test_process_llm_schema_failure_aborts_without_fallback(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    config = _config(tmp_path)
+    config.llm_mode = "local"
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: config)
+
+    def _mock_retrieve(_: str, __: AppConfig, client=None, max_retries: int = 2) -> RetrievalResult:
+        return RetrievalResult(
+            granola_id="g1",
+            meeting_id="29250e01-0751-4e02-9b24-f6d06f878b04",
+            title="Weekly Sync",
+            started_at="2026-03-01T09:12:00-06:00",
+            attendees=[],
+            transcript_text="Speaker A: hello",
+            raw_payload={},
+        )
+
+    monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", _mock_retrieve)
+    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_generation_ready", lambda _config: None)
     monkeypatch.setattr(
         "meeting_agent.cli.generate_note_payload_with_local_runtime",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -481,10 +484,10 @@ def test_process_llm_schema_failure_falls_back_to_no_llm(tmp_path: Path, monkeyp
         ],
         input="Inbox/Meetings/\n",
     )
-    assert result.exit_code == 0
-    assert "falling back to deterministic template" in result.output
+    assert result.exit_code == 5
+    assert "LLM generation failed" in result.output
     note_files = list((tmp_path / "vault" / "Inbox" / "Meetings").glob("*.md"))
-    assert len(note_files) == 1
+    assert len(note_files) == 0
 
 
 def test_process_new_updates_when_staged_hash_changes(tmp_path: Path, monkeypatch) -> None:

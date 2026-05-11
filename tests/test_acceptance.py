@@ -100,7 +100,7 @@ def test_acceptance_local_mode_uses_llm_path(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path, llm_mode="local"))
     monkeypatch.setattr("meeting_agent.cli.retrieve_transcript", lambda *_args, **_kwargs: _retrieval_result())
-    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_server", lambda _config: None)
+    monkeypatch.setattr("meeting_agent.cli._ensure_local_llm_generation_ready", lambda _config: None)
     called = {"llm": False}
 
     def _mock_llm(*_args, **_kwargs):

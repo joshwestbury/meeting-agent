@@ -12,7 +12,7 @@ import typer
 import yaml
 
 from meeting_agent import models
-from meeting_agent.auth import import_desktop_session_credentials
+from meeting_agent.auth import import_desktop_session_credentials, is_access_token_expired
 from meeting_agent.config import (
     AppConfig,
     load_and_validate_startup_config,
@@ -34,6 +34,7 @@ from meeting_agent.llm import (
     choose_candidate_folder_with_local_runtime,
     generate_note_payload_with_local_runtime,
     llm_openai_runtime_health_ok,
+    probe_local_llama_server,
 )
 from meeting_agent.logging import log_event
 from meeting_agent.normalize import compute_source_key, compute_transcript_hash, normalize_transcript_text
@@ -142,6 +143,11 @@ def auth_import_command(
     typer.echo("Desktop-session credentials imported.")
     typer.echo(f"client_id: {creds.client_id}")
     typer.echo(f"has_access_token: {bool(creds.access_token)}")
+    if creds.access_token:
+        access_token_expired = is_access_token_expired(creds.access_token)
+        typer.echo(f"access_token_expired: {access_token_expired}")
+        if access_token_expired:
+            typer.echo("Open Granola desktop and sign in again, then rerun `meeting-agent auth-import`.")
 
 
 @app.command("auth-check")
@@ -805,41 +811,17 @@ def _run_single_process(
                 folder_choice=folder_choice,
             )
     except SchemaValidationError as exc:
-        if not (no_llm or config.llm_mode == "none"):
-            log_event(
-                command=command_name,
-                source_key=source_key,
-                source_url=granola_link,
-                transcript_path=str(transcript_path),
-                action="schema_validation_fallback",
-                folder_choice=folder_choice,
-                error=str(exc),
-            )
-            typer.echo(
-                render_error_message(
-                    exc,
-                    context="LLM schema validation failed; falling back to deterministic template",
-                )
-            )
-            reason = "llm_schema_fallback"
-            payload = build_no_llm_payload(
-                meeting_date=meeting_date,
-                title=title,
-                folder_choice=folder_choice,
-                tags=["meeting"],
-            )
-        else:
-            log_event(
-                command=command_name,
-                source_key=source_key,
-                source_url=granola_link,
-                transcript_path=str(transcript_path),
-                action="schema_validation_failure",
-                folder_choice=folder_choice,
-                error=str(exc),
-            )
-            typer.echo(render_error_message(exc, context="Schema validation failed"))
-            return exit_code_for_error(exc)
+        log_event(
+            command=command_name,
+            source_key=source_key,
+            source_url=granola_link,
+            transcript_path=str(transcript_path),
+            action="schema_validation_failure",
+            folder_choice=folder_choice,
+            error=str(exc),
+        )
+        typer.echo(render_error_message(exc, context="LLM generation failed"))
+        return exit_code_for_error(exc)
 
     # Recording metadata is authoritative: use source title/date when available.
     payload_updates = {
@@ -1086,43 +1068,20 @@ def _run_batch_process_new(
                     folder_choice=folder_choice,
                 )
         except SchemaValidationError as exc:
-            if no_llm or config.llm_mode == "none":
-                counters = counters.bump("failed")
-                typer.echo(
-                    render_error_message(exc, context=f"[failed] {transcript_file.name} schema validation failed")
-                )
-                log_event(
-                    command=command_name,
-                    source_key=source_key,
-                    source_url=source_url,
-                    transcript_path=str(transcript_file),
-                    action="schema_validation_failure",
-                    folder_choice=folder_choice,
-                    error=str(exc),
-                )
-                continue
-
+            counters = counters.bump("failed")
             typer.echo(
-                render_error_message(
-                    exc,
-                    context=f"[fallback] {transcript_file.name} LLM schema validation failed; using deterministic template",
-                )
+                render_error_message(exc, context=f"[failed] {transcript_file.name} LLM generation failed")
             )
             log_event(
                 command=command_name,
                 source_key=source_key,
                 source_url=source_url,
                 transcript_path=str(transcript_file),
-                action="schema_validation_fallback",
+                action="schema_validation_failure",
                 folder_choice=folder_choice,
                 error=str(exc),
             )
-            payload = build_no_llm_payload(
-                meeting_date=date.today().isoformat(),
-                title=title,
-                folder_choice=folder_choice,
-                tags=["meeting", "staged"],
-            )
+            continue
         payload = payload.model_copy(update={"tags": _standardized_tags(folder_choice)})
 
         if dry_run:
@@ -1208,7 +1167,7 @@ def _title_from_meeting_id(meeting_id: str) -> str:
 def _session_ensure_local_llm_if_needed(config: AppConfig, *, no_llm: bool) -> None:
     if no_llm or config.llm_mode != "local":
         return
-    _ensure_local_llm_server(config)
+    _ensure_local_llm_generation_ready(config)
 
 
 def _ensure_local_llm_server(config: AppConfig) -> None:
@@ -1263,6 +1222,19 @@ def _ensure_local_llm_server(config: AppConfig) -> None:
     typer.echo("Local LLM server is ready.")
 
 
+def _ensure_local_llm_generation_ready(config: AppConfig) -> None:
+    _ensure_local_llm_server(config)
+    try:
+        probe_local_llama_server(
+            model=config.llm_model,
+            server_url=config.llm_server_url,
+        )
+    except SchemaValidationError as exc:
+        raise SchemaValidationError(
+            f"Local LLM server is reachable but not ready for inference: {exc}"
+        ) from exc
+
+
 def _generate_payload_with_local_llm_resilient(
     *,
     config: AppConfig,
@@ -1281,7 +1253,7 @@ def _generate_payload_with_local_llm_resilient(
         # If the runtime dropped between readiness check and request, restart/reattach once.
         if "Local LLM server request failed" not in str(exc):
             raise
-        _ensure_local_llm_server(config)
+        _ensure_local_llm_generation_ready(config)
         return generate_note_payload_with_local_runtime(
             transcript_text,
             [folder_choice],

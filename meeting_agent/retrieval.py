@@ -8,10 +8,12 @@ import httpx
 
 from meeting_agent.auth import (
     get_desktop_session_access_token,
+    import_desktop_session_credentials,
+    is_access_token_expired,
     refresh_desktop_session_credentials,
 )
 from meeting_agent.config import AppConfig
-from meeting_agent.errors import LinkValidationError, RetrievalError
+from meeting_agent.errors import ConfigError, LinkValidationError, RetrievalError
 from meeting_agent.links import parse_granola_link
 
 
@@ -164,6 +166,7 @@ def _retrieve_remote(
     fallback_document_id = resource_id if resource_id != fallback_meeting_id else None
     document_id = primary_document_id
     refreshed_after_unauthorized = False
+    reimported_after_unauthorized = False
     tried_fallback_document_id = False
 
     attempts = max_retries + 1
@@ -200,11 +203,17 @@ def _retrieve_remote(
             raise last_error
 
         if response.status_code in (401, 403):
-            if config.auth_mode == "desktop_session" and not refreshed_after_unauthorized:
-                new_creds = refresh_desktop_session_credentials(client=client)
-                headers = {"Authorization": f"Bearer {new_creds.access_token}"}
-                refreshed_after_unauthorized = True
-                # Immediate retry after credential refresh; do not consume retry budget.
+            recovered_headers, refreshed_after_unauthorized, reimported_after_unauthorized = (
+                _recover_desktop_session_auth_headers(
+                    config=config,
+                    client=client,
+                    refreshed=refreshed_after_unauthorized,
+                    reimported=reimported_after_unauthorized,
+                )
+            )
+            if recovered_headers is not None:
+                headers = recovered_headers
+                # Immediate retry after auth recovery; do not consume retry budget.
                 continue
             raise RetrievalError(AUTH_REQUIRED, "Granola authentication failed or expired.")
         if response.status_code == 404:
@@ -255,6 +264,7 @@ def _request_discovery_payload(
     )
     payloads = _build_discovery_payload_candidates(window_start, window_end)
     last_non_404_error: RetrievalError | None = None
+    reimported_after_unauthorized = False
 
     for path in endpoints:
         for payload in payloads:
@@ -290,10 +300,16 @@ def _request_discovery_payload(
                     raise last_error
 
                 if response.status_code in (401, 403):
-                    if config.auth_mode == "desktop_session" and not refreshed_after_unauthorized:
-                        new_creds = refresh_desktop_session_credentials(client=client)
-                        auth_headers = {"Authorization": f"Bearer {new_creds.access_token}"}
-                        refreshed_after_unauthorized = True
+                    recovered_headers, refreshed_after_unauthorized, reimported_after_unauthorized = (
+                        _recover_desktop_session_auth_headers(
+                            config=config,
+                            client=client,
+                            refreshed=refreshed_after_unauthorized,
+                            reimported=reimported_after_unauthorized,
+                        )
+                    )
+                    if recovered_headers is not None:
+                        auth_headers = recovered_headers
                         continue
                     raise RetrievalError(AUTH_REQUIRED, "Granola authentication failed or expired.")
 
@@ -456,6 +472,7 @@ def _candidate_has_retrievable_transcript(
 
     for document_id in candidate_ids:
         attempt = 0
+        reimported_after_unauthorized = False
         while attempt < attempts:
             try:
                 response = client.post(
@@ -468,10 +485,16 @@ def _candidate_has_retrievable_transcript(
                 return False
 
             if response.status_code in (401, 403):
-                if config.auth_mode == "desktop_session" and not refreshed_after_unauthorized:
-                    new_creds = refresh_desktop_session_credentials(client=client)
-                    auth_headers = {"Authorization": f"Bearer {new_creds.access_token}"}
-                    refreshed_after_unauthorized = True
+                recovered_headers, refreshed_after_unauthorized, reimported_after_unauthorized = (
+                    _recover_desktop_session_auth_headers(
+                        config=config,
+                        client=client,
+                        refreshed=refreshed_after_unauthorized,
+                        reimported=reimported_after_unauthorized,
+                    )
+                )
+                if recovered_headers is not None:
+                    auth_headers = recovered_headers
                     continue
                 raise RetrievalError(AUTH_REQUIRED, "Granola authentication failed or expired.")
             if response.status_code in (429, 502, 503, 504):
@@ -664,6 +687,44 @@ def _build_auth_headers(config: AppConfig) -> dict[str, str]:
         return {"Authorization": f"Bearer {token}"}
 
     raise RetrievalError(PARSE_ERROR, f"Unsupported auth mode for remote retrieval: {config.auth_mode}")
+
+
+def _recover_desktop_session_auth_headers(
+    *,
+    config: AppConfig,
+    client: httpx.Client,
+    refreshed: bool,
+    reimported: bool,
+) -> tuple[dict[str, str] | None, bool, bool]:
+    if config.auth_mode != "desktop_session":
+        return None, refreshed, reimported
+
+    if not refreshed:
+        try:
+            new_creds = refresh_desktop_session_credentials(client=client)
+        except RetrievalError:
+            imported_headers = _import_desktop_session_auth_headers()
+            if imported_headers is not None:
+                return imported_headers, True, True
+            raise
+        return {"Authorization": f"Bearer {new_creds.access_token}"}, True, reimported
+
+    if not reimported:
+        imported_headers = _import_desktop_session_auth_headers()
+        if imported_headers is not None:
+            return imported_headers, refreshed, True
+
+    return None, refreshed, reimported
+
+
+def _import_desktop_session_auth_headers() -> dict[str, str] | None:
+    try:
+        imported = import_desktop_session_credentials()
+    except ConfigError:
+        return None
+    if not imported.access_token or is_access_token_expired(imported.access_token):
+        return None
+    return {"Authorization": f"Bearer {imported.access_token}"}
 
 
 def _parse_json_payload(response: httpx.Response) -> dict[str, Any] | list[Any]:

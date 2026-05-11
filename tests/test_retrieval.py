@@ -506,6 +506,50 @@ def test_retrieve_transcript_desktop_session_refreshes_once_on_401(
     client.close()
 
 
+def test_retrieve_transcript_desktop_session_reimports_after_rejected_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _base_config(tmp_path, "desktop_session")
+    monkeypatch.setattr("meeting_agent.retrieval.get_desktop_session_access_token", lambda: "stale-token")
+
+    class _Creds:
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+    monkeypatch.setattr(
+        "meeting_agent.retrieval.refresh_desktop_session_credentials",
+        lambda client=None: _Creds("refreshed-token"),
+    )
+    monkeypatch.setattr(
+        "meeting_agent.retrieval.import_desktop_session_credentials",
+        lambda: _Creds("imported-token"),
+    )
+
+    seen_headers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(request.headers.get("Authorization", ""))
+        if request.headers.get("Authorization") != "Bearer imported-token":
+            return httpx.Response(401, json={"error": "expired"})
+        return httpx.Response(200, json={"transcript_text": "ok"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = retrieve_transcript(
+        "https://notes.granola.ai/t/29250e01-0751-4e02-9b24-f6d06f878b04",
+        config,
+        client=client,
+        max_retries=0,
+    )
+
+    assert result.transcript_text == "ok"
+    assert seen_headers == [
+        "Bearer stale-token",
+        "Bearer refreshed-token",
+        "Bearer imported-token",
+    ]
+    client.close()
+
+
 def test_retrieve_transcript_enriches_title_from_documents_batch_when_segments_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -608,6 +652,64 @@ def test_list_meetings_for_day_discovers_and_filters_candidates(
             has_transcript=True,
             source_url="https://notes.granola.ai/d/29250e01-0751-4e02-9b24-f6d06f878b04",
         )
+    ]
+    client.close()
+
+
+def test_list_meetings_for_day_desktop_session_reimports_after_rejected_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _base_config(tmp_path, "desktop_session")
+    monkeypatch.setattr("meeting_agent.retrieval.get_desktop_session_access_token", lambda: "stale-token")
+
+    class _Creds:
+        def __init__(self, access_token: str) -> None:
+            self.access_token = access_token
+
+    monkeypatch.setattr(
+        "meeting_agent.retrieval.refresh_desktop_session_credentials",
+        lambda client=None: _Creds("refreshed-token"),
+    )
+    monkeypatch.setattr(
+        "meeting_agent.retrieval.import_desktop_session_credentials",
+        lambda: _Creds("imported-token"),
+    )
+
+    seen_headers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.append(request.headers.get("Authorization", ""))
+        if request.headers.get("Authorization") != "Bearer imported-token":
+            return httpx.Response(401, json={"error": "expired"})
+        return httpx.Response(
+            200,
+            json={
+                "docs": [
+                    {
+                        "id": "29250e01-0751-4e02-9b24-f6d06f878b04",
+                        "meeting_id": "29250e01-0751-4e02-9b24-f6d06f878b04",
+                        "title": "Recovered",
+                        "started_at": "2026-03-07T09:00:00-06:00",
+                        "has_transcript": True,
+                    }
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = list_meetings_for_day(
+        config,
+        date(2026, 3, 7),
+        timezone_name="America/Chicago",
+        client=client,
+        max_retries=0,
+    )
+
+    assert [candidate.title for candidate in result] == ["Recovered"]
+    assert seen_headers == [
+        "Bearer stale-token",
+        "Bearer refreshed-token",
+        "Bearer imported-token",
     ]
     client.close()
 

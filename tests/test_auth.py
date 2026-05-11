@@ -1,4 +1,7 @@
+import base64
+import json
 from pathlib import Path
+import time
 
 import httpx
 import pytest
@@ -8,10 +11,18 @@ from meeting_agent.auth import (
     get_desktop_session_access_token,
     get_default_desktop_session_path,
     import_desktop_session_credentials,
+    is_access_token_expired,
     parse_desktop_session_json,
+    parse_stored_accounts_json,
     refresh_desktop_session_credentials,
 )
 from meeting_agent.errors import ConfigError, RetrievalError
+
+
+def _jwt_with_exp(exp: int) -> str:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+    return f"{header}.{payload}."
 
 
 def test_parse_desktop_session_json_prefers_workos_tokens() -> None:
@@ -60,6 +71,73 @@ def test_import_desktop_session_credentials_invalid_file_raises(tmp_path: Path) 
         import_desktop_session_credentials(session_file)
 
 
+def test_parse_stored_accounts_json_extracts_account_tokens() -> None:
+    raw = json.dumps(
+        {
+            "accounts": json.dumps(
+                [
+                    {
+                        "tokens": json.dumps(
+                            {
+                                "access_token": "a",
+                                "refresh_token": "r",
+                            }
+                        )
+                    }
+                ]
+            )
+        }
+    )
+
+    creds = parse_stored_accounts_json(raw)
+
+    assert len(creds) == 1
+    assert creds[0].access_token == "a"
+    assert creds[0].refresh_token == "r"
+
+
+def test_import_desktop_session_credentials_prefers_fresh_stored_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    granola_dir = home / "Library" / "Application Support" / "Granola"
+    granola_dir.mkdir(parents=True)
+    expired = _jwt_with_exp(int(time.time()) - 60)
+    fresh = _jwt_with_exp(int(time.time()) + 3600)
+    (granola_dir / "supabase.json").write_text(
+        json.dumps({"workos_tokens": json.dumps({"access_token": expired, "refresh_token": "old-r"})}),
+        encoding="utf-8",
+    )
+    (granola_dir / "stored-accounts.json").write_text(
+        json.dumps(
+            {
+                "accounts": json.dumps(
+                    [
+                        {
+                            "tokens": json.dumps(
+                                {
+                                    "access_token": fresh,
+                                    "refresh_token": "fresh-r",
+                                }
+                            )
+                        }
+                    ]
+                )
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, DesktopSessionCredentials] = {}
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("meeting_agent.auth.save_keychain_credentials", lambda creds: captured.setdefault("creds", creds))
+
+    imported = import_desktop_session_credentials()
+
+    assert imported.access_token == fresh
+    assert imported.refresh_token == "fresh-r"
+    assert captured["creds"].access_token == fresh
+
+
 def test_get_default_desktop_session_path_is_absolute() -> None:
     assert get_default_desktop_session_path().is_absolute()
 
@@ -77,6 +155,25 @@ def test_get_desktop_session_access_token_auto_imports_when_keychain_missing(
     assert token == "fresh"
 
 
+def test_get_desktop_session_access_token_refreshes_expired_stored_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expired = _jwt_with_exp(int(time.time()) - 60)
+    fresh = _jwt_with_exp(int(time.time()) + 3600)
+    monkeypatch.setattr(
+        "meeting_agent.auth.get_keychain_credentials",
+        lambda: DesktopSessionCredentials(access_token=expired, refresh_token="r", client_id="c"),
+    )
+    monkeypatch.setattr(
+        "meeting_agent.auth.refresh_desktop_session_credentials",
+        lambda: DesktopSessionCredentials(access_token=fresh, refresh_token="r", client_id="c"),
+    )
+
+    token = get_desktop_session_access_token()
+
+    assert token == fresh
+
+
 def test_get_desktop_session_access_token_raises_when_auto_import_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -91,8 +188,9 @@ def test_get_desktop_session_access_token_raises_when_auto_import_unavailable(
 
 
 def test_refresh_desktop_session_credentials_auto_imports_on_http_400(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
         "meeting_agent.auth.get_keychain_credentials",
         lambda: DesktopSessionCredentials(access_token="", refresh_token="old-r", client_id="c"),
@@ -109,3 +207,32 @@ def test_refresh_desktop_session_credentials_auto_imports_on_http_400(
     creds = refresh_desktop_session_credentials(client=client)
     client.close()
     assert creds.access_token == "imported-token"
+
+
+def test_is_access_token_expired_reads_jwt_exp_claim() -> None:
+    assert is_access_token_expired(_jwt_with_exp(99), now=100)
+    assert not is_access_token_expired(_jwt_with_exp(101), now=100)
+    assert not is_access_token_expired("opaque-token", now=100)
+
+
+def test_refresh_desktop_session_credentials_rejects_expired_auto_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    expired = _jwt_with_exp(int(time.time()) - 60)
+    monkeypatch.setattr(
+        "meeting_agent.auth.get_keychain_credentials",
+        lambda: DesktopSessionCredentials(access_token="", refresh_token="old-r", client_id="c"),
+    )
+    monkeypatch.setattr(
+        "meeting_agent.auth.import_desktop_session_credentials",
+        lambda path=None: DesktopSessionCredentials(access_token=expired, refresh_token="r2", client_id="c"),
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "bad refresh"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(RetrievalError, match="Desktop-session token refresh rejected"):
+        refresh_desktop_session_credentials(client=client)
+    client.close()
