@@ -1,4 +1,5 @@
 import base64
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ NETWORK_ERROR = "NETWORK_ERROR"
 PARSE_ERROR = "PARSE_ERROR"
 
 
-WORKOS_AUTH_URL = "https://api.workos.com/user_management/authenticate"
+WORKOS_AUTH_URL = "https://api.workos.com/userManagement/authenticateWithRefreshToken"
 KEYCHAIN_SERVICE = "com.meeting-agent.granola"
 KEYCHAIN_ACCOUNT = "desktop_session"
 DEFAULT_CLIENT_ID = "client_GranolaMac"
@@ -229,9 +230,8 @@ def refresh_desktop_session_credentials(
                 response = http_client.post(
                     WORKOS_AUTH_URL,
                     json={
-                        "client_id": creds.client_id,
-                        "grant_type": "refresh_token",
-                        "refresh_token": creds.refresh_token,
+                        "clientId": creds.client_id,
+                        "refreshToken": creds.refresh_token,
                     },
                     headers={"Content-Type": "application/json"},
                     timeout=20.0,
@@ -260,10 +260,10 @@ def refresh_desktop_session_credentials(
             if not isinstance(payload, dict):
                 raise RetrievalError(PARSE_ERROR, "Token refresh response must be a JSON object")
 
-            new_refresh = payload.get("refresh_token")
-            new_access = payload.get("access_token")
+            new_refresh = payload.get("refreshToken") or payload.get("refresh_token")
+            new_access = payload.get("accessToken") or payload.get("access_token")
             if not isinstance(new_access, str) or not new_access:
-                raise RetrievalError(PARSE_ERROR, "Token refresh response missing access_token")
+                raise RetrievalError(PARSE_ERROR, "Token refresh response missing accessToken")
             if is_access_token_expired(new_access):
                 raise RetrievalError(AUTH_REQUIRED, "Token refresh returned an expired access token.")
             new_creds = DesktopSessionCredentials(
@@ -323,10 +323,6 @@ def _decode_jwt_claims(token: str) -> dict[str, Any] | None:
     if isinstance(claims, dict):
         return claims
     return None
-
-
-from contextlib import contextmanager
-
 
 @contextmanager
 def _refresh_lock(timeout_seconds: float):

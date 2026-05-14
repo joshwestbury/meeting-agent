@@ -209,6 +209,49 @@ def test_refresh_desktop_session_credentials_auto_imports_on_http_400(
     assert creds.access_token == "imported-token"
 
 
+def test_refresh_desktop_session_credentials_uses_workos_refresh_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "meeting_agent.auth.get_keychain_credentials",
+        lambda: DesktopSessionCredentials(
+            access_token="old-access",
+            refresh_token="old-refresh",
+            client_id="client-c",
+        ),
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "meeting_agent.auth.save_keychain_credentials",
+        lambda creds: captured.setdefault("creds", creds),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "accessToken": "new-access",
+                "refreshToken": "new-refresh",
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    creds = refresh_desktop_session_credentials(client=client)
+    client.close()
+
+    assert captured["path"] == "/userManagement/authenticateWithRefreshToken"
+    assert captured["body"] == {
+        "clientId": "client-c",
+        "refreshToken": "old-refresh",
+    }
+    assert creds.access_token == "new-access"
+    assert creds.refresh_token == "new-refresh"
+    assert captured["creds"] == creds
+
+
 def test_is_access_token_expired_reads_jwt_exp_claim() -> None:
     assert is_access_token_expired(_jwt_with_exp(99), now=100)
     assert not is_access_token_expired(_jwt_with_exp(101), now=100)
