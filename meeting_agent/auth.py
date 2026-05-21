@@ -17,7 +17,7 @@ NETWORK_ERROR = "NETWORK_ERROR"
 PARSE_ERROR = "PARSE_ERROR"
 
 
-WORKOS_AUTH_URL = "https://api.workos.com/userManagement/authenticateWithRefreshToken"
+WORKOS_AUTH_URL = "https://api.workos.com/user_management/authenticate"
 KEYCHAIN_SERVICE = "com.meeting-agent.granola"
 KEYCHAIN_ACCOUNT = "desktop_session"
 DEFAULT_CLIENT_ID = "client_GranolaMac"
@@ -55,26 +55,38 @@ def parse_desktop_session_json(raw_json: str) -> DesktopSessionCredentials | Non
 
     workos = _extract_embedded_json(parsed.get("workos_tokens"))
     if workos and isinstance(workos.get("access_token"), str):
+        client_id = _resolve_client_id(
+            workos.get("client_id"),
+            access_token=str(workos.get("access_token", "")),
+        )
         return DesktopSessionCredentials(
             refresh_token=str(workos.get("refresh_token", "")),
             access_token=str(workos.get("access_token", "")),
-            client_id=str(workos.get("client_id", DEFAULT_CLIENT_ID)),
+            client_id=client_id,
         )
 
     cognito = _extract_embedded_json(parsed.get("cognito_tokens"))
     if cognito and isinstance(cognito.get("refresh_token"), str):
+        client_id = _resolve_client_id(
+            cognito.get("client_id"),
+            access_token=str(cognito.get("access_token", "")),
+        )
         return DesktopSessionCredentials(
             refresh_token=str(cognito.get("refresh_token", "")),
             access_token=str(cognito.get("access_token", "")),
-            client_id=str(cognito.get("client_id", DEFAULT_CLIENT_ID)),
+            client_id=client_id,
         )
 
     refresh_token = parsed.get("refresh_token")
     if isinstance(refresh_token, str) and refresh_token:
+        client_id = _resolve_client_id(
+            parsed.get("client_id"),
+            access_token=str(parsed.get("access_token", "")),
+        )
         return DesktopSessionCredentials(
             refresh_token=refresh_token,
             access_token=str(parsed.get("access_token", "")),
-            client_id=str(parsed.get("client_id", DEFAULT_CLIENT_ID)),
+            client_id=client_id,
         )
     return None
 
@@ -103,11 +115,15 @@ def parse_stored_accounts_json(raw_json: str) -> list[DesktopSessionCredentials]
         tokens = _extract_embedded_json(account.get("tokens"))
         if not tokens or not isinstance(tokens.get("access_token"), str):
             continue
+        client_id = _resolve_client_id(
+            tokens.get("client_id"),
+            access_token=str(tokens.get("access_token", "")),
+        )
         credentials.append(
             DesktopSessionCredentials(
                 refresh_token=str(tokens.get("refresh_token", "")),
                 access_token=str(tokens.get("access_token", "")),
-                client_id=str(tokens.get("client_id", DEFAULT_CLIENT_ID)),
+                client_id=client_id,
             )
         )
     return credentials
@@ -228,10 +244,11 @@ def refresh_desktop_session_credentials(
         try:
             try:
                 response = http_client.post(
-                    WORKOS_AUTH_URL,
+                    _resolve_refresh_url(creds),
                     json={
-                        "clientId": creds.client_id,
-                        "refreshToken": creds.refresh_token,
+                        "grant_type": "refresh_token",
+                        "client_id": creds.client_id,
+                        "refresh_token": creds.refresh_token,
                     },
                     headers={"Content-Type": "application/json"},
                     timeout=20.0,
@@ -307,6 +324,30 @@ def _extract_embedded_json(value: Any) -> dict[str, Any] | None:
         if isinstance(parsed, dict):
             return parsed
     return None
+
+
+def _resolve_client_id(raw_client_id: Any, *, access_token: str) -> str:
+    if isinstance(raw_client_id, str) and raw_client_id:
+        return raw_client_id
+    claims = _decode_jwt_claims(access_token)
+    if claims:
+        issuer = claims.get("iss")
+        if isinstance(issuer, str):
+            inferred = issuer.rstrip("/").rsplit("/", 1)[-1]
+            if inferred.startswith("client_"):
+                return inferred
+    return DEFAULT_CLIENT_ID
+
+
+def _resolve_refresh_url(creds: DesktopSessionCredentials) -> str:
+    claims = _decode_jwt_claims(creds.access_token)
+    if claims:
+        issuer = claims.get("iss")
+        if isinstance(issuer, str) and "/user_management/" in issuer:
+            base_url = issuer.split("/user_management/", 1)[0].rstrip("/")
+            if base_url.startswith("http://") or base_url.startswith("https://"):
+                return f"{base_url}/user_management/authenticate"
+    return WORKOS_AUTH_URL
 
 
 def _decode_jwt_claims(token: str) -> dict[str, Any] | None:

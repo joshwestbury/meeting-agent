@@ -46,6 +46,28 @@ def test_parse_desktop_session_json_falls_back_to_cognito() -> None:
     assert creds.refresh_token == "r2"
 
 
+def test_parse_desktop_session_json_derives_client_id_from_access_token_issuer() -> None:
+    token = (
+        "eyJhbGciOiJub25lIn0."
+        "eyJpc3MiOiJodHRwczovL2F1dGguZ3Jhbm9sYS5haS91c2VyX21hbmFnZW1lbnQvY2xpZW50XzAxQUJDIn0."
+    )
+    raw = json.dumps(
+        {
+            "workos_tokens": json.dumps(
+                {
+                    "access_token": token,
+                    "refresh_token": "r",
+                }
+            )
+        }
+    )
+
+    creds = parse_desktop_session_json(raw)
+
+    assert creds is not None
+    assert creds.client_id == "client_01ABC"
+
+
 def test_import_desktop_session_credentials_reads_file_and_saves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -94,6 +116,34 @@ def test_parse_stored_accounts_json_extracts_account_tokens() -> None:
     assert len(creds) == 1
     assert creds[0].access_token == "a"
     assert creds[0].refresh_token == "r"
+
+
+def test_parse_stored_accounts_json_derives_client_id_from_access_token_issuer() -> None:
+    token = (
+        "eyJhbGciOiJub25lIn0."
+        "eyJpc3MiOiJodHRwczovL2F1dGguZ3Jhbm9sYS5haS91c2VyX21hbmFnZW1lbnQvY2xpZW50XzAxREVGIn0."
+    )
+    raw = json.dumps(
+        {
+            "accounts": json.dumps(
+                [
+                    {
+                        "tokens": json.dumps(
+                            {
+                                "access_token": token,
+                                "refresh_token": "r",
+                            }
+                        )
+                    }
+                ]
+            )
+        }
+    )
+
+    creds = parse_stored_accounts_json(raw)
+
+    assert len(creds) == 1
+    assert creds[0].client_id == "client_01DEF"
 
 
 def test_import_desktop_session_credentials_prefers_fresh_stored_account(
@@ -213,10 +263,14 @@ def test_refresh_desktop_session_credentials_uses_workos_refresh_endpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
+    access_token = (
+        "eyJhbGciOiJub25lIn0."
+        "eyJpc3MiOiJodHRwczovL2F1dGguZ3Jhbm9sYS5haS91c2VyX21hbmFnZW1lbnQvY2xpZW50LWMifQ."
+    )
     monkeypatch.setattr(
         "meeting_agent.auth.get_keychain_credentials",
         lambda: DesktopSessionCredentials(
-            access_token="old-access",
+            access_token=access_token,
             refresh_token="old-refresh",
             client_id="client-c",
         ),
@@ -228,6 +282,7 @@ def test_refresh_desktop_session_credentials_uses_workos_refresh_endpoint(
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
         captured["path"] = request.url.path
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
@@ -242,10 +297,12 @@ def test_refresh_desktop_session_credentials_uses_workos_refresh_endpoint(
     creds = refresh_desktop_session_credentials(client=client)
     client.close()
 
-    assert captured["path"] == "/userManagement/authenticateWithRefreshToken"
+    assert captured["url"] == "https://auth.granola.ai/user_management/authenticate"
+    assert captured["path"] == "/user_management/authenticate"
     assert captured["body"] == {
-        "clientId": "client-c",
-        "refreshToken": "old-refresh",
+        "grant_type": "refresh_token",
+        "client_id": "client-c",
+        "refresh_token": "old-refresh",
     }
     assert creds.access_token == "new-access"
     assert creds.refresh_token == "new-refresh"
