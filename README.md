@@ -16,7 +16,7 @@ Meeting Agent is a **local-first workflow** that connects your [Granola](https:/
 **Why use it**
 
 - Keep meeting knowledge in **your** Obsidian vault with consistent frontmatter and section layout.
-- Prefer **local inference** (configurable GGUF models and `meeting-agent models` helpers) so transcript text does not need to leave your machine for summarization—unless you choose `llm_mode = "none"` or `--no-llm`.
+- Prefer **local inference** (configurable GGUF models and `meeting-agent models` helpers) so transcript text does not need to leave your machine for summarization—use `--no-llm` when you want a deterministic template instead.
 - **One command** (`ma` / `meeting-agent` with no subcommand) runs the interactive “today’s meetings” flow: discover transcript-ready meetings, select which to process, choose vault folders, and write notes.
 
 **CLI surface (overview)**
@@ -31,6 +31,32 @@ Meeting Agent is a **local-first workflow** that connects your [Granola](https:/
 
 Configuration lives at `~/.config/meeting-agent/config.toml`. Staging (transcripts, caches, failed artifacts) uses the `staging_root` you set during `init`.
 
+## Auth Modes
+
+Auth is configured via `meeting-agent init`:
+
+- `token`: reads a Granola token from an environment variable (defaults to `MEETING_AGENT_TOKEN`).
+- `cookie`: uses a Netscape-format cookie file (path configured in `cookie_file`).
+- `desktop_session`: imports Granola Desktop session credentials into your keychain via `meeting-agent auth-import` and refreshes them as needed.
+- `manual_export`: skips network calls and reads local transcripts from your staging directory.
+
+### `manual_export` layout
+
+When `auth_mode = "manual_export"`, `meeting-agent process` expects a transcript file at:
+
+- `staging_root/transcripts/<meeting_id>.txt`
+
+(`meeting_id` comes from the Granola link.)
+
+## Local LLM
+
+By default, Meeting Agent calls an OpenAI-compatible local server at `llm_server_url` (for example `llama-server`) and expects `POST /v1/chat/completions` to work.
+
+Useful helpers:
+
+- `meeting-agent models pull` downloads the configured GGUF model into `model_cache_dir`.
+- `meeting-agent models doctor` checks that `llama-server` is on `PATH`, the model exists, and the server is reachable.
+
 ## Common Command
 
 Run the default daily workflow:
@@ -43,7 +69,7 @@ This will:
 - discover transcript-ready meetings for today
 - let you select meetings (`all` or `1,3-5`)
 - prompt `Which folder`
-- resolve your folder hint and fall back to `Inbox/` if unmatched
+- resolve your folder hint and fall back to your configured `default_folder` (or `Inbox/`) if unmatched
 - generate LLM summary and include full transcript by default
 
 Use a custom date:

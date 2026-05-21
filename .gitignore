@@ -6,3 +6,40 @@ __pycache__/
 *.pyc
 /tmp/
 build/
+dist/
+
+# Python tooling caches
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# OS/editor cruft
+.DS_Store
+.idea/
+.vscode/
+
+# Local secrets / env files (do not commit)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# meeting-agent / Granola artifacts (can contain transcripts, cookies, or tokens)
+cookies*.txt
+**/cookies*.txt
+**/supabase.json
+**/stored-accounts.json
+**/.config/meeting-agent/
+**/.cache/meeting-agent/
+granola-export/
+staging/
+transcripts/
+retrieval-cache/
+failed-notes/
+
+# Obsidian/note output (often personal/private)
+Inbox/
