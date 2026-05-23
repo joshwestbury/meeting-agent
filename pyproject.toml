@@ -16,6 +16,7 @@ dependencies = [
   "python-dateutil>=2.9.0",
   "platformdirs>=4.2.0",
   "keyring>=25.6.0",
+  "cryptography>=46.0.0",
 ]
 
 [project.optional-dependencies]

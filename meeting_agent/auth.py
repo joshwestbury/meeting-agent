@@ -1,8 +1,11 @@
 import base64
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import time
 from typing import Any
 
@@ -131,16 +134,12 @@ def parse_stored_accounts_json(raw_json: str) -> list[DesktopSessionCredentials]
 
 def import_desktop_session_credentials(path: Path | None = None) -> DesktopSessionCredentials:
     source_path = path or get_default_desktop_session_path()
-    if not source_path.exists():
+    if not source_path.exists() and (path is not None or not _encrypted_storage_path(source_path).exists()):
         raise ConfigError(f"Granola desktop session file not found: {source_path}")
-    try:
-        raw = source_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ConfigError(f"Could not read Granola desktop session file: {source_path}") from exc
 
-    creds = parse_desktop_session_json(raw)
+    creds = _choose_best_credentials(_load_desktop_session_credentials(source_path, include_encrypted=path is None))
     if path is None:
-        creds = _choose_best_credentials([creds, *_load_stored_account_credentials()])
+        creds = _choose_best_credentials([creds, *_load_stored_account_credentials(include_encrypted=True)])
     if creds is None:
         raise ConfigError("Could not parse desktop session credentials from Granola file")
 
@@ -261,7 +260,13 @@ def refresh_desktop_session_credentials(
                 if imported and imported.access_token and not is_access_token_expired(imported.access_token):
                     return imported
                 message = f"Desktop-session token refresh rejected: HTTP {response.status_code}"
-                if imported and imported.access_token and is_access_token_expired(imported.access_token):
+                if has_newer_encrypted_granola_storage():
+                    message += (
+                        ". Granola has newer encrypted desktop session files, but meeting-agent could not "
+                        "read them from macOS Keychain. Approve access to `Granola Safe Storage` if prompted, "
+                        "then run `meeting-agent auth-import`."
+                    )
+                elif imported and imported.access_token and is_access_token_expired(imported.access_token):
                     message += (
                         ". Granola desktop session file also contains an expired access token; "
                         "open Granola desktop and sign in again, then run `meeting-agent auth-import`."
@@ -302,15 +307,145 @@ def _auto_import_desktop_session_credentials() -> DesktopSessionCredentials | No
         return None
 
 
-def _load_stored_account_credentials() -> list[DesktopSessionCredentials]:
+def _load_desktop_session_credentials(
+    path: Path,
+    *,
+    include_encrypted: bool,
+) -> list[DesktopSessionCredentials]:
+    credentials: list[DesktopSessionCredentials] = []
+    for raw in _load_granola_storage_candidates(path, include_encrypted=include_encrypted):
+        creds = parse_desktop_session_json(raw)
+        if creds is not None:
+            credentials.append(creds)
+    return credentials
+
+
+def _load_stored_account_credentials(*, include_encrypted: bool = False) -> list[DesktopSessionCredentials]:
     stored_accounts_path = get_default_stored_accounts_path()
-    if not stored_accounts_path.exists():
-        return []
+    credentials: list[DesktopSessionCredentials] = []
+    for raw in _load_granola_storage_candidates(stored_accounts_path, include_encrypted=include_encrypted):
+        credentials.extend(parse_stored_accounts_json(raw))
+    return credentials
+
+
+def _load_granola_storage_candidates(path: Path, *, include_encrypted: bool) -> list[str]:
+    candidates: list[tuple[float, str]] = []
+    encrypted_path = _encrypted_storage_path(path)
+    if include_encrypted and encrypted_path.exists():
+        encrypted_raw = _read_encrypted_granola_storage(encrypted_path)
+        if encrypted_raw is not None:
+            candidates.append((_mtime(encrypted_path), encrypted_raw))
+    if path.exists():
+        try:
+            candidates.append((_mtime(path), path.read_text(encoding="utf-8")))
+        except OSError as exc:
+            if not candidates:
+                raise ConfigError(f"Could not read Granola desktop session file: {path}") from exc
+    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+
+    deduped: list[str] = []
+    for _, raw in candidates:
+        if raw not in deduped:
+            deduped.append(raw)
+    return deduped
+
+
+def _encrypted_storage_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.enc")
+
+
+def _mtime(path: Path) -> float:
     try:
-        raw = stored_accounts_path.read_text(encoding="utf-8")
+        return path.stat().st_mtime
     except OSError:
-        return []
-    return parse_stored_accounts_json(raw)
+        return 0
+
+
+def _read_encrypted_granola_storage(path: Path) -> str | None:
+    try:
+        dek = _read_granola_storage_dek(path.with_name("storage.dek"))
+        if dek is None:
+            return None
+        data = path.read_bytes()
+        return _decrypt_granola_storage_payload(data, dek)
+    except Exception:
+        return None
+
+
+def _read_granola_storage_dek(path: Path) -> bytes | None:
+    if not path.exists() or os.uname().sysname.lower() != "darwin":
+        return None
+    encrypted = path.read_bytes()
+    if not encrypted.startswith(b"v10"):
+        return None
+    password = _read_macos_safe_storage_password()
+    if not password:
+        return None
+
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    key = hashlib.pbkdf2_hmac("sha1", password.encode("utf-8"), b"saltysalt", 1003, dklen=16)
+    decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
+    padded = decryptor.update(encrypted[3:]) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    decoded = unpadder.update(padded) + unpadder.finalize()
+    dek = base64.b64decode(decoded)
+    if len(dek) != 32:
+        return None
+    return dek
+
+
+def _read_macos_safe_storage_password() -> str | None:
+    proc: subprocess.Popen[str] | None = None
+    try:
+        proc = subprocess.Popen(
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                "Granola Safe Storage",
+                "-a",
+                "Granola Key",
+                "-w",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        stdout, _ = proc.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        if proc is not None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+        return None
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return stdout.rstrip("\n") or None
+
+
+def _decrypt_granola_storage_payload(data: bytes, dek: bytes) -> str:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    iv_len = 12
+    tag_len = 16
+    if len(data) <= iv_len + tag_len:
+        raise ValueError("Encrypted Granola storage payload is too short")
+    iv = data[:iv_len]
+    ciphertext = data[iv_len:-tag_len]
+    tag = data[-tag_len:]
+    return AESGCM(dek).decrypt(iv, ciphertext + tag, None).decode("utf-8")
+
+
+def has_newer_encrypted_granola_storage() -> bool:
+    for path in (get_default_desktop_session_path(), get_default_stored_accounts_path()):
+        encrypted_path = _encrypted_storage_path(path)
+        if encrypted_path.exists() and _mtime(encrypted_path) > _mtime(path):
+            return True
+    return False
 
 
 def _extract_embedded_json(value: Any) -> dict[str, Any] | None:

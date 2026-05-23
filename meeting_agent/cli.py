@@ -12,7 +12,11 @@ import typer
 import yaml
 
 from meeting_agent import models
-from meeting_agent.auth import import_desktop_session_credentials, is_access_token_expired
+from meeting_agent.auth import (
+    has_newer_encrypted_granola_storage,
+    import_desktop_session_credentials,
+    is_access_token_expired,
+)
 from meeting_agent.config import (
     AppConfig,
     load_and_validate_startup_config,
@@ -147,7 +151,13 @@ def auth_import_command(
         access_token_expired = is_access_token_expired(creds.access_token)
         typer.echo(f"access_token_expired: {access_token_expired}")
         if access_token_expired:
-            typer.echo("Open Granola desktop and sign in again, then rerun `meeting-agent auth-import`.")
+            if has_newer_encrypted_granola_storage():
+                typer.echo(
+                    "Granola has newer encrypted session files, but meeting-agent could not read them. "
+                    "Approve access to `Granola Safe Storage` if prompted, then rerun `meeting-agent auth-import`."
+                )
+            else:
+                typer.echo("Open Granola desktop and sign in again, then rerun `meeting-agent auth-import`.")
 
 
 @app.command("auth-check")

@@ -188,6 +188,77 @@ def test_import_desktop_session_credentials_prefers_fresh_stored_account(
     assert captured["creds"].access_token == fresh
 
 
+def test_import_desktop_session_credentials_prefers_newer_encrypted_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    granola_dir = home / "Library" / "Application Support" / "Granola"
+    granola_dir.mkdir(parents=True)
+    expired = _jwt_with_exp(int(time.time()) - 60)
+    fresh = _jwt_with_exp(int(time.time()) + 3600)
+    session_file = granola_dir / "supabase.json"
+    encrypted_session_file = granola_dir / "supabase.json.enc"
+    session_file.write_text(
+        json.dumps({"workos_tokens": json.dumps({"access_token": expired, "refresh_token": "old-r"})}),
+        encoding="utf-8",
+    )
+    encrypted_session_file.write_bytes(b"encrypted")
+    now = time.time()
+    session_file.touch()
+    encrypted_session_file.touch()
+    monkeypatch.setattr("meeting_agent.auth._mtime", lambda path: now + 10 if path == encrypted_session_file else now)
+    monkeypatch.setattr(
+        "meeting_agent.auth._read_encrypted_granola_storage",
+        lambda path: json.dumps(
+            {"workos_tokens": json.dumps({"access_token": fresh, "refresh_token": "fresh-r"})}
+        ),
+    )
+    captured: dict[str, DesktopSessionCredentials] = {}
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("meeting_agent.auth.save_keychain_credentials", lambda creds: captured.setdefault("creds", creds))
+
+    imported = import_desktop_session_credentials()
+
+    assert imported.access_token == fresh
+    assert imported.refresh_token == "fresh-r"
+    assert captured["creds"].access_token == fresh
+
+
+def test_import_desktop_session_credentials_uses_newer_encrypted_stored_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    granola_dir = home / "Library" / "Application Support" / "Granola"
+    granola_dir.mkdir(parents=True)
+    expired = _jwt_with_exp(int(time.time()) - 60)
+    fresh = _jwt_with_exp(int(time.time()) + 3600)
+    (granola_dir / "supabase.json").write_text(
+        json.dumps({"workos_tokens": json.dumps({"access_token": expired, "refresh_token": "old-r"})}),
+        encoding="utf-8",
+    )
+    encrypted_accounts_file = granola_dir / "stored-accounts.json.enc"
+    encrypted_accounts_file.write_bytes(b"encrypted")
+    monkeypatch.setattr(
+        "meeting_agent.auth._read_encrypted_granola_storage",
+        lambda path: json.dumps(
+            {
+                "accounts": json.dumps(
+                    [{"tokens": json.dumps({"access_token": fresh, "refresh_token": "fresh-r"})}]
+                )
+            }
+        ),
+    )
+    captured: dict[str, DesktopSessionCredentials] = {}
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("meeting_agent.auth.save_keychain_credentials", lambda creds: captured.setdefault("creds", creds))
+
+    imported = import_desktop_session_credentials()
+
+    assert imported.access_token == fresh
+    assert imported.refresh_token == "fresh-r"
+    assert captured["creds"].access_token == fresh
+
+
 def test_get_default_desktop_session_path_is_absolute() -> None:
     assert get_default_desktop_session_path().is_absolute()
 
