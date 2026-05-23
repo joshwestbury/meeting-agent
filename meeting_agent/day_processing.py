@@ -140,14 +140,6 @@ def _process_selected_candidates(
     total_selected = len(selected_indices)
     for position, index in enumerate(selected_indices, start=1):
         candidate = candidates[index]
-        folder_choice = prompt_folder_choice_for_candidate(
-            config,
-            candidate,
-            position,
-            total_selected,
-            previous_folder_choice,
-        )
-        previous_folder_choice = folder_choice
         granola_link = candidate.source_url
         duplicate_path = find_existing_note_by_source_url(config.vault_root, granola_link)
         if duplicate_path is not None:
@@ -160,6 +152,14 @@ def _process_selected_candidates(
             )
             emit(f"Skipped duplicate source_url. Existing note: {duplicate_path}")
             continue
+        folder_choice = prompt_folder_choice_for_candidate(
+            config,
+            candidate,
+            position,
+            total_selected,
+            previous_folder_choice,
+        )
+        previous_folder_choice = folder_choice
         exit_code = run_single_process(
             config=config,
             granola_link=granola_link,

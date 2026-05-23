@@ -119,3 +119,57 @@ def test_run_process_day_passes_progress_and_previous_folder(tmp_path: Path) -> 
         ("One", 1, 2, None),
         ("Two", 2, 2, "Clients/Acme/"),
     ]
+
+
+def test_run_process_day_skips_duplicates_before_folder_prompt(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    existing_note = config.vault_root / "Inbox" / "Existing.md"
+    candidates = [
+        _candidate("29250e01-0751-4e02-9b24-f6d06f878b04", "Duplicate"),
+        _candidate("29250e01-0751-4e02-9b24-f6d06f878b05", "New"),
+    ]
+    prompted_titles: list[str] = []
+    processed_links: list[str] = []
+    emitted: list[str] = []
+
+    def _find_existing_note(_vault_root: Path, source_url: str) -> Path | None:
+        if source_url == candidates[0].source_url:
+            return existing_note
+        return None
+
+    def _prompt_folder(
+        _config: AppConfig,
+        candidate: MeetingCandidate,
+        _position: int,
+        _total: int,
+        _previous_folder: str | None,
+    ) -> str:
+        prompted_titles.append(candidate.title or "")
+        return "Inbox/"
+
+    def _run_single_process(**kwargs) -> int:
+        processed_links.append(kwargs["granola_link"])
+        return 0
+
+    exit_code = run_process_day(
+        config=config,
+        target_date=date(2026, 3, 7),
+        yes=True,
+        dry_run=False,
+        no_llm=True,
+        output_mode="full",
+        emit=emitted.append,
+        ensure_local_llm_if_needed=lambda _config: None,
+        render_meeting_candidates=lambda _candidates, _target_date: None,
+        prompt_candidate_indices=lambda _total: [0, 1],
+        prompt_folder_choice_for_candidate=_prompt_folder,
+        find_existing_note_by_source_url=_find_existing_note,
+        run_single_process=_run_single_process,
+        discover_meetings=lambda _config, _target_date, _timezone_name: candidates,
+    )
+
+    assert exit_code == 0
+    assert prompted_titles == ["New"]
+    assert processed_links == [candidates[1].source_url]
+    assert f"Skipped duplicate source_url. Existing note: {existing_note}" in emitted
+    assert "- skipped_existing_source_url: 1" in emitted
