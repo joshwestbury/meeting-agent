@@ -1,0 +1,4 @@
+interface:
+  display_name: "Meeting Agent"
+  short_description: "Work on the Meeting Agent CLI safely and consistently."
+  default_prompt: "Use the Meeting Agent skill to inspect, change, test, and document this local CLI project."

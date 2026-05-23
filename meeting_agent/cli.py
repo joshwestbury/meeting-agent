@@ -23,6 +23,7 @@ from meeting_agent.config import (
     save_config,
     validate_init_config,
 )
+from meeting_agent.day_processing import parse_candidate_selection, run_process_day
 from meeting_agent.errors import (
     CollisionError,
     ConfigError,
@@ -289,73 +290,30 @@ def _run_process_day(
     no_llm: bool,
     output_mode: str,
 ) -> int:
-    timezone_name = config.timezone if config.timezone else "local"
-    try:
-        candidates = list_meetings_for_day(
-            config,
-            target_date,
-            timezone_name=timezone_name,
-        )
-    except RetrievalError as exc:
-        typer.echo(render_error_message(exc, context="Meeting discovery failed"))
-        return exit_code_for_error(exc)
-
-    if not candidates:
-        typer.echo(f"No transcript-ready meetings found for {target_date.isoformat()}.")
-        return 0
-
-    _session_ensure_local_llm_if_needed(config, no_llm=no_llm)
-    _render_meeting_candidates(candidates, target_date)
-    selected_indices = _prompt_candidate_indices(len(candidates))
-    if not selected_indices:
-        typer.echo("No meetings selected.")
-        return 0
-
-    processed = 0
-    failed = 0
-    skipped_existing = 0
-    for index in selected_indices:
-        candidate = candidates[index]
-        folder_choice = _prompt_day_folder_choice_for_candidate(
+    return run_process_day(
+        config=config,
+        target_date=target_date,
+        yes=yes,
+        dry_run=dry_run,
+        no_llm=no_llm,
+        output_mode=output_mode,
+        emit=typer.echo,
+        ensure_local_llm_if_needed=lambda config: _session_ensure_local_llm_if_needed(config, no_llm=no_llm),
+        render_meeting_candidates=_render_meeting_candidates,
+        prompt_candidate_indices=_prompt_candidate_indices,
+        prompt_folder_choice_for_candidate=lambda config, candidate: _prompt_day_folder_choice_for_candidate(
             config,
             candidate=candidate,
             no_llm=no_llm,
-        )
-        granola_link = candidate.source_url
-        duplicate_path = _find_existing_note_by_source_url(config.vault_root, granola_link)
-        if duplicate_path is not None:
-            skipped_existing += 1
-            log_event(
-                command="process_day",
-                source_url=granola_link,
-                action="skipped_existing_source_url",
-                output_path=str(duplicate_path),
-            )
-            typer.echo(f"Skipped duplicate source_url. Existing note: {duplicate_path}")
-            continue
-        exit_code = _run_single_process(
-            config=config,
-            granola_link=granola_link,
-            folder_choice=folder_choice,
-            confirm_write=not yes,
-            dry_run=dry_run,
-            no_llm=no_llm,
-            output_mode=output_mode,
-            command_name="process_day",
-        )
-        if exit_code == 0:
-            processed += 1
-        else:
-            failed += 1
-
-    typer.echo("Day processing summary:")
-    typer.echo(f"- selected: {len(selected_indices)}")
-    typer.echo(f"- processed: {processed}")
-    typer.echo(f"- skipped_existing_source_url: {skipped_existing}")
-    typer.echo(f"- failed: {failed}")
-    if failed > 0:
-        return 1
-    return 0
+        ),
+        find_existing_note_by_source_url=_find_existing_note_by_source_url,
+        run_single_process=_run_single_process,
+        discover_meetings=lambda config, target_date, timezone_name: list_meetings_for_day(
+            config,
+            target_date,
+            timezone_name=timezone_name,
+        ),
+    )
 
 
 @app.command("open")
@@ -531,37 +489,7 @@ def _prompt_candidate_indices(total_candidates: int) -> list[int]:
 
 
 def _parse_candidate_selection(value: str, total_candidates: int) -> list[int] | None:
-    cleaned = value.strip().lower()
-    if not cleaned:
-        return []
-    if cleaned == "all":
-        return list(range(total_candidates))
-
-    selected: set[int] = set()
-    for chunk in cleaned.split(","):
-        part = chunk.strip()
-        if not part:
-            return None
-        if "-" in part:
-            pieces = part.split("-", 1)
-            if len(pieces) != 2 or not pieces[0].isdigit() or not pieces[1].isdigit():
-                return None
-            start = int(pieces[0])
-            end = int(pieces[1])
-            if start <= 0 or end <= 0 or end < start:
-                return None
-            if end > total_candidates:
-                return None
-            for idx in range(start, end + 1):
-                selected.add(idx - 1)
-            continue
-        if not part.isdigit():
-            return None
-        idx = int(part)
-        if idx <= 0 or idx > total_candidates:
-            return None
-        selected.add(idx - 1)
-    return sorted(selected)
+    return parse_candidate_selection(value, total_candidates)
 
 
 def _resolve_folder_choice(
