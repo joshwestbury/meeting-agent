@@ -309,7 +309,7 @@ def _run_process_day(
             total=total,
             previous_folder=previous_folder,
         ),
-        find_existing_note_by_source_url=_find_existing_note_by_source_url,
+        find_existing_note_for_candidate=_find_existing_note_for_candidate,
         run_single_process=_run_single_process,
         discover_meetings=lambda config, target_date, timezone_name: list_meetings_for_day(
             config,
@@ -1242,6 +1242,48 @@ def _find_existing_note_by_source_url(vault_root: Path, source_url: str) -> Path
         if target_keys.intersection(_source_url_match_keys(candidate_url)):
             return note_path
     return None
+
+
+def _find_existing_note_for_candidate(config: AppConfig, candidate: MeetingCandidate) -> Path | None:
+    frontmatter_match = _find_existing_note_by_source_url(config.vault_root, candidate.source_url)
+    if frontmatter_match is not None:
+        return frontmatter_match
+
+    for entry in load_state():
+        if entry.status != "processed" or not entry.output_path:
+            continue
+        if _state_entry_matches_candidate(entry, candidate):
+            return Path(entry.output_path)
+    return None
+
+
+def _state_entry_matches_candidate(entry: StateEntry, candidate: MeetingCandidate) -> bool:
+    candidate_ids = _candidate_identity_keys(candidate)
+    if entry.granola_id and entry.granola_id in candidate_ids:
+        return True
+    if entry.source_key and entry.source_key in candidate_ids:
+        return True
+    if entry.transcript_path and Path(entry.transcript_path).stem in candidate_ids:
+        return True
+
+    candidate_keys = _source_url_match_keys(candidate.source_url)
+    if entry.source_url and candidate_keys.intersection(_source_url_match_keys(entry.source_url)):
+        return True
+    return False
+
+
+def _candidate_identity_keys(candidate: MeetingCandidate) -> set[str]:
+    keys = {
+        candidate.meeting_id.strip(),
+        candidate.document_id.strip(),
+    }
+    try:
+        parsed = parse_granola_link(candidate.source_url)
+        keys.add(parsed.meeting_id)
+        keys.add(parsed.raw_token)
+    except LinkValidationError:
+        pass
+    return {key for key in keys if key}
 
 
 def _read_frontmatter(note_path: Path) -> dict | None:

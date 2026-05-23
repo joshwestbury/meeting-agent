@@ -37,7 +37,7 @@ def run_process_day(
         [AppConfig, MeetingCandidate, int, int, str | None],
         str,
     ],
-    find_existing_note_by_source_url: Callable[[Path, str], Path | None],
+    find_existing_note_for_candidate: Callable[[AppConfig, MeetingCandidate], Path | None],
     run_single_process: Callable[..., int],
     discover_meetings: Callable[[AppConfig, date, str], list[MeetingCandidate]] | None = None,
 ) -> int:
@@ -75,7 +75,7 @@ def run_process_day(
         output_mode=output_mode,
         emit=emit,
         prompt_folder_choice_for_candidate=prompt_folder_choice_for_candidate,
-        find_existing_note_by_source_url=find_existing_note_by_source_url,
+        find_existing_note_for_candidate=find_existing_note_for_candidate,
         run_single_process=run_single_process,
     )
     _emit_summary(summary, emit=emit)
@@ -130,7 +130,7 @@ def _process_selected_candidates(
         [AppConfig, MeetingCandidate, int, int, str | None],
         str,
     ],
-    find_existing_note_by_source_url: Callable[[Path, str], Path | None],
+    find_existing_note_for_candidate: Callable[[AppConfig, MeetingCandidate], Path | None],
     run_single_process: Callable[..., int],
 ) -> DayProcessingSummary:
     processed = 0
@@ -141,7 +141,7 @@ def _process_selected_candidates(
     for position, index in enumerate(selected_indices, start=1):
         candidate = candidates[index]
         granola_link = candidate.source_url
-        duplicate_path = find_existing_note_by_source_url(config.vault_root, granola_link)
+        duplicate_path = find_existing_note_for_candidate(config, candidate)
         if duplicate_path is not None:
             skipped_existing += 1
             log_event(

@@ -61,7 +61,7 @@ def test_run_process_day_processes_selected_candidates(tmp_path: Path) -> None:
         render_meeting_candidates=lambda _candidates, _target_date: None,
         prompt_candidate_indices=lambda _total: [1],
         prompt_folder_choice_for_candidate=lambda _config, _candidate, _position, _total, _previous: "Inbox/",
-        find_existing_note_by_source_url=lambda _vault_root, _source_url: None,
+        find_existing_note_for_candidate=lambda _config, _candidate: None,
         run_single_process=_run_single_process,
         discover_meetings=lambda _config, _target_date, _timezone_name: candidates,
     )
@@ -109,7 +109,7 @@ def test_run_process_day_passes_progress_and_previous_folder(tmp_path: Path) -> 
         render_meeting_candidates=lambda _candidates, _target_date: None,
         prompt_candidate_indices=lambda _total: [0, 1],
         prompt_folder_choice_for_candidate=_prompt_folder,
-        find_existing_note_by_source_url=lambda _vault_root, _source_url: None,
+        find_existing_note_for_candidate=lambda _config, _candidate: None,
         run_single_process=lambda **_kwargs: 0,
         discover_meetings=lambda _config, _target_date, _timezone_name: candidates,
     )
@@ -132,8 +132,8 @@ def test_run_process_day_skips_duplicates_before_folder_prompt(tmp_path: Path) -
     processed_links: list[str] = []
     emitted: list[str] = []
 
-    def _find_existing_note(_vault_root: Path, source_url: str) -> Path | None:
-        if source_url == candidates[0].source_url:
+    def _find_existing_note(_config: AppConfig, candidate: MeetingCandidate) -> Path | None:
+        if candidate.source_url == candidates[0].source_url:
             return existing_note
         return None
 
@@ -163,7 +163,7 @@ def test_run_process_day_skips_duplicates_before_folder_prompt(tmp_path: Path) -
         render_meeting_candidates=lambda _candidates, _target_date: None,
         prompt_candidate_indices=lambda _total: [0, 1],
         prompt_folder_choice_for_candidate=_prompt_folder,
-        find_existing_note_by_source_url=_find_existing_note,
+        find_existing_note_for_candidate=_find_existing_note,
         run_single_process=_run_single_process,
         discover_meetings=lambda _config, _target_date, _timezone_name: candidates,
     )

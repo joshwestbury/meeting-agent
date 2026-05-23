@@ -1,11 +1,18 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from meeting_agent.cli import app
 from meeting_agent.config import AppConfig
 from meeting_agent.retrieval import MeetingCandidate
+from meeting_agent.state import StateEntry
+
+
+@pytest.fixture(autouse=True)
+def _empty_cli_state(monkeypatch) -> None:
+    monkeypatch.setattr("meeting_agent.cli.load_state", lambda: [])
 
 
 def _config(tmp_path: Path) -> AppConfig:
@@ -286,3 +293,116 @@ def test_process_day_folder_prompt_shows_progress_and_reuses_previous_folder(
     assert "[2/2] Which folder should Two go to?" in result.output
     assert "[Clients/Acme/]" in result.output
     assert captured_folders == ["Clients/Acme/", "Clients/Acme/"]
+
+
+def test_process_day_skips_state_duplicate_before_folder_prompt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = CliRunner()
+    monkeypatch.setenv("MEETING_AGENT_TOKEN", "secret")
+    config = _config(tmp_path)
+    existing_note = config.vault_root / "Inbox" / "Existing.md"
+    existing_note.parent.mkdir(parents=True)
+    existing_note.write_text("---\nsource_url: https://notes.granola.ai/t/old-token\n---\n", encoding="utf-8")
+    meeting_id = "29250e01-0751-4e02-9b24-f6d06f878b04"
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: config)
+    monkeypatch.setattr(
+        "meeting_agent.cli.list_meetings_for_day",
+        lambda *_args, **_kwargs: [
+            MeetingCandidate(
+                document_id="a",
+                meeting_id=meeting_id,
+                title="Already imported",
+                started_at="2026-03-07T08:00:00-06:00",
+                has_transcript=True,
+                source_url=f"https://notes.granola.ai/d/{meeting_id}",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "meeting_agent.cli.load_state",
+        lambda: [
+            StateEntry(
+                granola_id=meeting_id,
+                transcript_hash="hash",
+                source_key=meeting_id,
+                source_url="https://notes.granola.ai/t/different-token",
+                transcript_path="/tmp/transcript.txt",
+                last_processed_at="2026-03-07T08:30:00-06:00",
+                output_path=str(existing_note),
+                status="processed",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "meeting_agent.cli._prompt_day_folder_choice_for_candidate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not prompt duplicate")),
+    )
+    monkeypatch.setattr(
+        "meeting_agent.cli._run_single_process",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not process duplicate")),
+    )
+
+    result = runner.invoke(app, ["process-day", "--date", "2026-03-07", "--yes", "--no-llm"], input="1\n")
+
+    assert result.exit_code == 0
+    assert f"Skipped duplicate source_url. Existing note: {existing_note}" in result.output
+    assert "- skipped_existing_source_url: 1" in result.output
+
+
+def test_process_day_skips_document_id_state_duplicate_before_folder_prompt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = CliRunner()
+    monkeypatch.setenv("MEETING_AGENT_TOKEN", "secret")
+    config = _config(tmp_path)
+    existing_note = config.vault_root / "Inbox" / "Existing.md"
+    existing_note.parent.mkdir(parents=True)
+    existing_note.write_text("---\nsource_url: https://notes.granola.ai/t/old-token\n---\n", encoding="utf-8")
+    document_id = "324bd317-faf9-4433-9e8d-4dca73df343c"
+    meeting_id = "calendar-meeting-id-that-differs-from-document-id"
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: config)
+    monkeypatch.setattr(
+        "meeting_agent.cli.list_meetings_for_day",
+        lambda *_args, **_kwargs: [
+            MeetingCandidate(
+                document_id=document_id,
+                meeting_id=meeting_id,
+                title="Already imported",
+                started_at="2026-03-07T08:00:00-06:00",
+                has_transcript=True,
+                source_url=f"https://notes.granola.ai/d/{meeting_id}",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "meeting_agent.cli.load_state",
+        lambda: [
+            StateEntry(
+                granola_id=document_id,
+                transcript_hash="hash",
+                source_key=document_id,
+                source_url="https://notes.granola.ai/t/different-token",
+                transcript_path=f"/tmp/{document_id}.txt",
+                last_processed_at="2026-03-07T08:30:00-06:00",
+                output_path=str(existing_note),
+                status="processed",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "meeting_agent.cli._prompt_day_folder_choice_for_candidate",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not prompt duplicate")),
+    )
+    monkeypatch.setattr(
+        "meeting_agent.cli._run_single_process",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not process duplicate")),
+    )
+
+    result = runner.invoke(app, ["process-day", "--date", "2026-03-07", "--yes", "--no-llm"], input="1\n")
+
+    assert result.exit_code == 0
+    assert f"Skipped duplicate source_url. Existing note: {existing_note}" in result.output
+    assert "- skipped_existing_source_url: 1" in result.output
