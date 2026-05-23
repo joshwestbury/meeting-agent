@@ -60,7 +60,7 @@ def test_run_process_day_processes_selected_candidates(tmp_path: Path) -> None:
         ensure_local_llm_if_needed=lambda _config: None,
         render_meeting_candidates=lambda _candidates, _target_date: None,
         prompt_candidate_indices=lambda _total: [1],
-        prompt_folder_choice_for_candidate=lambda _config, _candidate: "Inbox/",
+        prompt_folder_choice_for_candidate=lambda _config, _candidate, _position, _total, _previous: "Inbox/",
         find_existing_note_by_source_url=lambda _vault_root, _source_url: None,
         run_single_process=_run_single_process,
         discover_meetings=lambda _config, _target_date, _timezone_name: candidates,
@@ -69,9 +69,53 @@ def test_run_process_day_processes_selected_candidates(tmp_path: Path) -> None:
     assert exit_code == 0
     assert processed_links == ["https://notes.granola.ai/d/29250e01-0751-4e02-9b24-f6d06f878b05"]
     assert emitted == [
+        "Selected 1 meeting(s):",
+        "- [1/1] 2026-03-07T08:00:00-06:00 | Two",
         "Day processing summary:",
         "- selected: 1",
         "- processed: 1",
         "- skipped_existing_source_url: 0",
         "- failed: 0",
+    ]
+
+
+def test_run_process_day_passes_progress_and_previous_folder(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    prompted: list[tuple[str, int, int, str | None]] = []
+    candidates = [
+        _candidate("29250e01-0751-4e02-9b24-f6d06f878b04", "One"),
+        _candidate("29250e01-0751-4e02-9b24-f6d06f878b05", "Two"),
+    ]
+
+    def _prompt_folder(
+        _config: AppConfig,
+        candidate: MeetingCandidate,
+        position: int,
+        total: int,
+        previous_folder: str | None,
+    ) -> str:
+        prompted.append((candidate.title or "", position, total, previous_folder))
+        return "Clients/Acme/" if position == 1 else "Clients/Acme/"
+
+    exit_code = run_process_day(
+        config=config,
+        target_date=date(2026, 3, 7),
+        yes=True,
+        dry_run=False,
+        no_llm=True,
+        output_mode="full",
+        emit=lambda _message: None,
+        ensure_local_llm_if_needed=lambda _config: None,
+        render_meeting_candidates=lambda _candidates, _target_date: None,
+        prompt_candidate_indices=lambda _total: [0, 1],
+        prompt_folder_choice_for_candidate=_prompt_folder,
+        find_existing_note_by_source_url=lambda _vault_root, _source_url: None,
+        run_single_process=lambda **_kwargs: 0,
+        discover_meetings=lambda _config, _target_date, _timezone_name: candidates,
+    )
+
+    assert exit_code == 0
+    assert prompted == [
+        ("One", 1, 2, None),
+        ("Two", 2, 2, "Clients/Acme/"),
     ]

@@ -223,7 +223,7 @@ def test_process_day_prompts_folder_per_selected_meeting(tmp_path: Path, monkeyp
     prompted_titles: list[str] = []
     monkeypatch.setattr(
         "meeting_agent.cli._prompt_day_folder_choice_for_candidate",
-        lambda _config, candidate, no_llm=False: (
+        lambda _config, candidate, **_kwargs: (
             prompted_titles.append(candidate.title or ""),
             "Inbox/Meetings/",
         )[1],
@@ -234,3 +234,55 @@ def test_process_day_prompts_folder_per_selected_meeting(tmp_path: Path, monkeyp
 
     assert result.exit_code == 0
     assert prompted_titles == ["One", "Two"]
+
+
+def test_process_day_folder_prompt_shows_progress_and_reuses_previous_folder(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = CliRunner()
+    monkeypatch.setenv("MEETING_AGENT_TOKEN", "secret")
+    config = _config(tmp_path)
+    (config.vault_root / "Clients" / "Acme").mkdir(parents=True)
+    monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: config)
+    monkeypatch.setattr(
+        "meeting_agent.cli.list_meetings_for_day",
+        lambda *_args, **_kwargs: [
+            MeetingCandidate(
+                document_id="a",
+                meeting_id="29250e01-0751-4e02-9b24-f6d06f878b04",
+                title="One",
+                started_at="2026-03-07T08:00:00-06:00",
+                has_transcript=True,
+                source_url="https://notes.granola.ai/d/29250e01-0751-4e02-9b24-f6d06f878b04",
+            ),
+            MeetingCandidate(
+                document_id="b",
+                meeting_id="29250e01-0751-4e02-9b24-f6d06f878b05",
+                title="Two",
+                started_at="2026-03-07T09:00:00-06:00",
+                has_transcript=True,
+                source_url="https://notes.granola.ai/d/29250e01-0751-4e02-9b24-f6d06f878b05",
+            ),
+        ],
+    )
+    monkeypatch.setattr("meeting_agent.cli._find_existing_note_by_source_url", lambda *_args, **_kwargs: None)
+    captured_folders: list[str] = []
+    monkeypatch.setattr(
+        "meeting_agent.cli._run_single_process",
+        lambda **kwargs: (captured_folders.append(kwargs["folder_choice"]), 0)[1],
+    )
+
+    result = runner.invoke(
+        app,
+        ["process-day", "--date", "2026-03-07", "--yes", "--no-llm"],
+        input="1-2\nClients/Acme\n\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Select meetings to import (`all`, `1,3`, `2-5`; Enter = none)" in result.output
+    assert "Selected 2 meeting(s):" in result.output
+    assert "[1/2] Which folder should One go to?" in result.output
+    assert "[2/2] Which folder should Two go to?" in result.output
+    assert "[Clients/Acme/]" in result.output
+    assert captured_folders == ["Clients/Acme/", "Clients/Acme/"]

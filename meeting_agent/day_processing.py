@@ -33,7 +33,10 @@ def run_process_day(
     ensure_local_llm_if_needed: Callable[[AppConfig], None],
     render_meeting_candidates: Callable[[list[MeetingCandidate], date], None],
     prompt_candidate_indices: Callable[[int], list[int]],
-    prompt_folder_choice_for_candidate: Callable[[AppConfig, MeetingCandidate], str],
+    prompt_folder_choice_for_candidate: Callable[
+        [AppConfig, MeetingCandidate, int, int, str | None],
+        str,
+    ],
     find_existing_note_by_source_url: Callable[[Path, str], Path | None],
     run_single_process: Callable[..., int],
     discover_meetings: Callable[[AppConfig, date, str], list[MeetingCandidate]] | None = None,
@@ -57,6 +60,11 @@ def run_process_day(
         emit("No meetings selected.")
         return 0
 
+    _emit_selected_meetings(
+        candidates=candidates,
+        selected_indices=selected_indices,
+        emit=emit,
+    )
     summary = _process_selected_candidates(
         config=config,
         candidates=candidates,
@@ -118,16 +126,28 @@ def _process_selected_candidates(
     no_llm: bool,
     output_mode: str,
     emit: Callable[[str], None],
-    prompt_folder_choice_for_candidate: Callable[[AppConfig, MeetingCandidate], str],
+    prompt_folder_choice_for_candidate: Callable[
+        [AppConfig, MeetingCandidate, int, int, str | None],
+        str,
+    ],
     find_existing_note_by_source_url: Callable[[Path, str], Path | None],
     run_single_process: Callable[..., int],
 ) -> DayProcessingSummary:
     processed = 0
     failed = 0
     skipped_existing = 0
-    for index in selected_indices:
+    previous_folder_choice: str | None = None
+    total_selected = len(selected_indices)
+    for position, index in enumerate(selected_indices, start=1):
         candidate = candidates[index]
-        folder_choice = prompt_folder_choice_for_candidate(config, candidate)
+        folder_choice = prompt_folder_choice_for_candidate(
+            config,
+            candidate,
+            position,
+            total_selected,
+            previous_folder_choice,
+        )
+        previous_folder_choice = folder_choice
         granola_link = candidate.source_url
         duplicate_path = find_existing_note_by_source_url(config.vault_root, granola_link)
         if duplicate_path is not None:
@@ -161,6 +181,20 @@ def _process_selected_candidates(
         skipped_existing_source_url=skipped_existing,
         failed=failed,
     )
+
+
+def _emit_selected_meetings(
+    *,
+    candidates: list[MeetingCandidate],
+    selected_indices: list[int],
+    emit: Callable[[str], None],
+) -> None:
+    emit(f"Selected {len(selected_indices)} meeting(s):")
+    for position, index in enumerate(selected_indices, start=1):
+        candidate = candidates[index]
+        title = candidate.title or "Untitled meeting"
+        started_label = candidate.started_at or "unknown time"
+        emit(f"- [{position}/{len(selected_indices)}] {started_label} | {title}")
 
 
 def _emit_summary(summary: DayProcessingSummary, *, emit: Callable[[str], None]) -> None:

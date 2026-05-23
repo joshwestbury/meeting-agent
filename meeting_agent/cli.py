@@ -301,10 +301,13 @@ def _run_process_day(
         ensure_local_llm_if_needed=lambda config: _session_ensure_local_llm_if_needed(config, no_llm=no_llm),
         render_meeting_candidates=_render_meeting_candidates,
         prompt_candidate_indices=_prompt_candidate_indices,
-        prompt_folder_choice_for_candidate=lambda config, candidate: _prompt_day_folder_choice_for_candidate(
+        prompt_folder_choice_for_candidate=lambda config, candidate, position, total, previous_folder: _prompt_day_folder_choice_for_candidate(
             config,
             candidate=candidate,
             no_llm=no_llm,
+            position=position,
+            total=total,
+            previous_folder=previous_folder,
         ),
         find_existing_note_by_source_url=_find_existing_note_by_source_url,
         run_single_process=_run_single_process,
@@ -455,9 +458,17 @@ def _prompt_day_folder_choice_for_candidate(
     *,
     candidate: MeetingCandidate,
     no_llm: bool,
+    position: int | None = None,
+    total: int | None = None,
+    previous_folder: str | None = None,
 ) -> str:
     title = (candidate.title or candidate.meeting_id or "meeting").strip()
-    folder_hint = typer.prompt(f"Which folder should {title} go to?", default="Inbox")
+    progress = f"[{position}/{total}] " if position is not None and total is not None else ""
+    default_folder = previous_folder or "Inbox"
+    folder_hint = typer.prompt(
+        f"{progress}Which folder should {title} go to?",
+        default=default_folder,
+    )
     resolved = _resolve_folder_hint(config, folder_hint.strip(), no_llm=no_llm) if folder_hint.strip() else None
     if resolved is not None:
         return resolved
@@ -481,11 +492,15 @@ def _render_meeting_candidates(candidates: list[MeetingCandidate], target_date: 
 
 def _prompt_candidate_indices(total_candidates: int) -> list[int]:
     while True:
-        raw_selection = typer.prompt("Select meetings to process (`all` or `1,3-5`)")
+        raw_selection = typer.prompt(
+            "Select meetings to import (`all`, `1,3`, `2-5`; Enter = none)",
+            default="",
+            show_default=False,
+        )
         parsed = _parse_candidate_selection(raw_selection, total_candidates)
         if parsed is not None:
             return parsed
-        typer.echo("Invalid selection. Use `all` or comma-separated numbers/ranges like `1,3-5`.")
+        typer.echo("Invalid selection. Use `all`, comma-separated numbers like `1,3`, or ranges like `2-5`.")
 
 
 def _parse_candidate_selection(value: str, total_candidates: int) -> list[int] | None:
