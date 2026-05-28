@@ -1,5 +1,6 @@
 from pathlib import Path
 import subprocess
+from collections.abc import Callable
 from datetime import date, datetime
 from dataclasses import dataclass
 import difflib
@@ -80,7 +81,7 @@ def main(
         if parsed_date is None:
             typer.echo("Invalid --date format. Expected YYYY-MM-DD.")
             raise typer.Exit(code=3)
-        _interactive_default_flow(config, target_date=parsed_date)
+        _run_tui_flow(config, target_date=parsed_date)
 
 
 @app.command("init")
@@ -279,6 +280,83 @@ def process_day_command(
     )
     if exit_code != 0:
         raise typer.Exit(code=exit_code)
+
+
+@app.command("tui")
+def tui_command(
+    target_date: str | None = typer.Option(
+        None,
+        "--date",
+        help="Target meeting date in YYYY-MM-DD. Defaults to today.",
+    ),
+) -> None:
+    """Open the keyboard-driven terminal UI."""
+    config = load_and_validate_startup_config()
+    parsed_date = _parse_target_date(target_date)
+    if parsed_date is None:
+        typer.echo("Invalid --date format. Expected YYYY-MM-DD.")
+        raise typer.Exit(code=3)
+
+    _run_tui_flow(config, target_date=parsed_date)
+
+
+def _run_tui_flow(config: AppConfig, *, target_date: date) -> None:
+    from meeting_agent.tui import run_tui
+
+    existing_note_lookup = _build_existing_note_lookup(config)
+
+    def _process_candidate(
+        candidate: MeetingCandidate,
+        emit: Callable[[str], None],
+        folder_choice: str | None = None,
+    ) -> None:
+        def _emit_tui(message: str) -> None:
+            emit(_format_tui_output_message(config, message))
+
+        duplicate_path = existing_note_lookup(candidate)
+        if duplicate_path is not None:
+            log_event(
+                command="tui",
+                source_url=candidate.source_url,
+                action="skipped_existing_source_url",
+                output_path=str(duplicate_path),
+            )
+            _emit_tui("Skipped duplicate source_url.")
+            _emit_tui(f"Existing note: {_display_note_path(config, duplicate_path)}")
+            return
+
+        folder_hint = folder_choice or _default_folder_choice(config) or "Inbox/"
+        resolved_folder_choice = _resolve_folder_choice(
+            config,
+            folder_hint,
+            no_llm=False,
+            emit=_emit_tui,
+        )
+        _emit_tui(f"Destination folder: {resolved_folder_choice}")
+        exit_code = _run_single_process(
+            config=config,
+            granola_link=candidate.source_url,
+            folder_choice=resolved_folder_choice,
+            confirm_write=False,
+            dry_run=False,
+            no_llm=False,
+            output_mode="full",
+            command_name="tui",
+            emit=_emit_tui,
+        )
+        if exit_code != 0:
+            _emit_tui(f"Processing failed with exit code {exit_code}.")
+
+    try:
+        run_tui(
+            config,
+            target_date=target_date,
+            process_meeting=_process_candidate,
+            existing_note_for_candidate=existing_note_lookup,
+        )
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from exc
 
 
 def _run_process_day(
@@ -513,18 +591,19 @@ def _resolve_folder_choice(
     *,
     no_llm: bool,
     prompt_label: str = "Destination folder",
+    emit: Callable[[str], None] = typer.echo,
 ) -> str:
     if folder_hint and folder_hint.strip():
-        resolved = _resolve_folder_hint(config, folder_hint.strip(), no_llm=no_llm)
+        resolved = _resolve_folder_hint(config, folder_hint.strip(), no_llm=no_llm, emit=emit)
         if resolved is not None:
             return resolved
         fallback = _default_folder_choice(config)
         if fallback is not None:
-            typer.echo(
+            emit(
                 f"Could not match '{folder_hint.strip()}' to a vault folder. Falling back to default: {fallback}"
             )
             return fallback
-        typer.echo(
+        emit(
             f"Could not match '{folder_hint.strip()}' to an existing vault folder; using the provided folder input."
         )
         return folder_hint.strip()
@@ -541,7 +620,13 @@ def _default_folder_choice(config: AppConfig) -> str | None:
     return None
 
 
-def _resolve_folder_hint(config: AppConfig, folder_hint: str, *, no_llm: bool) -> str | None:
+def _resolve_folder_hint(
+    config: AppConfig,
+    folder_hint: str,
+    *,
+    no_llm: bool,
+    emit: Callable[[str], None] = typer.echo,
+) -> str | None:
     candidates = _discover_vault_folder_candidates(config.vault_root)
     if not candidates:
         return None
@@ -550,9 +635,9 @@ def _resolve_folder_hint(config: AppConfig, folder_hint: str, *, no_llm: bool) -
     exact_match = _exact_folder_match_for_hints(folder_hints, candidates)
     if exact_match is not None:
         if _normalize_folder_path(folder_hint).casefold() != _normalize_folder_path(exact_match).casefold():
-            typer.echo(f"Folder resolved: {folder_hint} -> {exact_match}")
+            emit(f"Folder resolved: {folder_hint} -> {exact_match}")
         elif folder_hint.strip() != exact_match:
-            typer.echo(f"Folder resolved: {folder_hint} -> {exact_match}")
+            emit(f"Folder resolved: {folder_hint} -> {exact_match}")
         return exact_match
 
     ranked = _rank_folder_candidates_for_hints(folder_hints, candidates)
@@ -561,15 +646,15 @@ def _resolve_folder_hint(config: AppConfig, folder_hint: str, *, no_llm: bool) -
     best_score, best_candidate = ranked[0]
     second_score = ranked[1][0] if len(ranked) > 1 else 0
     if best_score >= 92:
-        typer.echo(f"Folder resolved: {folder_hint} -> {best_candidate}")
+        emit(f"Folder resolved: {folder_hint} -> {best_candidate}")
         return best_candidate
     if best_score >= 84 and best_score - second_score >= 8:
-        typer.echo(f"Folder resolved: {folder_hint} -> {best_candidate}")
+        emit(f"Folder resolved: {folder_hint} -> {best_candidate}")
         return best_candidate
 
     llm_pick = _resolve_folder_hint_with_llm(config, folder_hint, ranked, no_llm=no_llm)
     if llm_pick is not None:
-        typer.echo(f"Folder resolved: {folder_hint} -> {llm_pick}")
+        emit(f"Folder resolved: {folder_hint} -> {llm_pick}")
         return llm_pick
     return None
 
@@ -583,6 +668,12 @@ def _folder_hint_variants(folder_hint: str, config: AppConfig) -> list[str]:
         normalized_folded = normalized_hint.casefold()
         if normalized_folded != preferred_root.casefold() and not normalized_folded.startswith(rooted_prefix):
             variants.append(f"{preferred_root}/{normalized_hint}")
+    projects_root = "Projects"
+    if normalized_hint and (config.vault_root / projects_root).is_dir():
+        projects_prefix = f"{projects_root.casefold()}/"
+        normalized_folded = normalized_hint.casefold()
+        if normalized_folded != projects_root.casefold() and not normalized_folded.startswith(projects_prefix):
+            variants.append(f"{projects_root}/{normalized_hint}")
     return variants
 
 
@@ -715,9 +806,10 @@ def _run_single_process(
     no_llm: bool,
     output_mode: str,
     command_name: str,
+    emit: Callable[[str], None] = typer.echo,
 ) -> int:
     log_event(command=command_name, source_url=granola_link, action="start")
-    typer.echo("Retrieving transcript...")
+    emit("Retrieving transcript...")
 
     try:
         retrieval = retrieve_transcript(granola_link, config)
@@ -728,7 +820,7 @@ def _run_single_process(
             action="retrieval_failure",
             error=f"[{exc.code}] {exc}",
         )
-        typer.echo(render_error_message(exc, context="Retrieval failed"))
+        emit(render_error_message(exc, context="Retrieval failed"))
         return exit_code_for_error(exc)
 
     normalized_text = normalize_transcript_text(retrieval.transcript_text)
@@ -773,7 +865,7 @@ def _run_single_process(
             folder_choice=folder_choice,
             error=str(exc),
         )
-        typer.echo(render_error_message(exc, context="LLM generation failed"))
+        emit(render_error_message(exc, context="LLM generation failed"))
         return exit_code_for_error(exc)
 
     # Recording metadata is authoritative: use source title/date when available.
@@ -803,16 +895,16 @@ def _run_single_process(
             folder_reason=reason,
             error=str(exc),
         )
-        typer.echo(render_error_message(exc, context="Folder validation failed"))
+        emit(render_error_message(exc, context="Folder validation failed"))
         return exit_code_for_error(exc)
 
     if dry_run:
-        typer.echo("Dry run preview:")
-        typer.echo(f"title: {payload.title}")
-        typer.echo(f"meeting_date: {payload.meeting_date}")
-        typer.echo(f"folder: {payload.folder_choice}")
-        typer.echo(f"filename: {filename}")
-        typer.echo(f"output_path: {output_path}")
+        emit("Dry run preview:")
+        emit(f"title: {payload.title}")
+        emit(f"meeting_date: {payload.meeting_date}")
+        emit(f"folder: {payload.folder_choice}")
+        emit(f"filename: {filename}")
+        emit(f"output_path: {output_path}")
         log_event(
             command=command_name,
             source_key=source_key,
@@ -826,12 +918,12 @@ def _run_single_process(
         return 0
 
     if confirm_write:
-        typer.echo("Preview:")
-        typer.echo(f"- Meeting title: {payload.title}")
-        typer.echo(f"- Meeting date: {payload.meeting_date}")
-        typer.echo(f"- Target folder: {payload.folder_choice}")
-        typer.echo(f"- Filename: {filename}")
-        typer.echo(f"- Output path: {output_path}")
+        emit("Preview:")
+        emit(f"- Meeting title: {payload.title}")
+        emit(f"- Meeting date: {payload.meeting_date}")
+        emit(f"- Target folder: {payload.folder_choice}")
+        emit(f"- Filename: {filename}")
+        emit(f"- Output path: {output_path}")
         if not typer.confirm("Write note?", default=False):
             log_event(
                 command=command_name,
@@ -843,7 +935,7 @@ def _run_single_process(
                 folder_reason=reason,
                 output_path=str(output_path),
             )
-            typer.echo("Aborted. No note written.")
+            emit("Aborted. No note written.")
             return 0
 
     render_context = RenderContext(
@@ -883,7 +975,7 @@ def _run_single_process(
             output_path=str(output_path),
             error=str(exc),
         )
-        typer.echo(render_error_message(exc, context="Write failed"))
+        emit(render_error_message(exc, context="Write failed"))
         return exit_code_for_error(exc)
 
     log_event(
@@ -898,12 +990,12 @@ def _run_single_process(
         error="" if result.status != "quarantined" else f"quarantine:{result.quarantine_path}",
     )
     if result.status == "processed":
-        typer.echo(f"Note written: {result.output_path}")
+        emit(f"Note written: {result.output_path}")
         return 0
     if result.status == "skipped":
-        typer.echo(f"Skipped duplicate transcript. Existing note: {result.output_path}")
+        emit(f"Skipped duplicate transcript. Existing note: {result.output_path}")
         return 0
-    typer.echo(f"Quarantined due to collision. Artifact: {result.quarantine_path}")
+    emit(f"Quarantined due to collision. Artifact: {result.quarantine_path}")
     return 6
 
 
@@ -1255,6 +1347,65 @@ def _find_existing_note_for_candidate(config: AppConfig, candidate: MeetingCandi
         if _state_entry_matches_candidate(entry, candidate):
             return Path(entry.output_path)
     return None
+
+
+def _display_note_path(config: AppConfig, note_path: Path) -> str:
+    try:
+        return note_path.resolve().relative_to(config.vault_root.resolve()).as_posix()
+    except ValueError:
+        return str(note_path)
+
+
+def _format_tui_output_message(config: AppConfig, message: str) -> str:
+    prefix = "Note written: "
+    if message.startswith(prefix):
+        raw_path = message.removeprefix(prefix).strip()
+        if raw_path:
+            return f"{prefix}{_shorten_tui_path(_display_note_path(config, Path(raw_path)))}"
+    return message
+
+
+def _shorten_tui_path(path: str, *, max_length: int = 68) -> str:
+    if len(path) <= max_length:
+        return path
+    parts = path.split("/")
+    if len(parts) >= 3:
+        prefix = "/".join(parts[:2])
+        filename = parts[-1]
+        filename_room = max_length - len(prefix) - 3
+        if filename_room > 12:
+            return f"{prefix}/…/{filename[: filename_room - 1]}…"
+    return f"{path[: max_length - 1]}…"
+
+
+def _build_existing_note_lookup(config: AppConfig) -> Callable[[MeetingCandidate], Path | None]:
+    by_source_key: dict[str, Path] = {}
+    if config.vault_root.exists():
+        for note_path in sorted(config.vault_root.rglob("*.md")):
+            frontmatter = _read_frontmatter(note_path)
+            if not isinstance(frontmatter, dict):
+                continue
+            source_url = frontmatter.get("source_url")
+            if not isinstance(source_url, str) or not source_url.strip():
+                continue
+            for key in _source_url_match_keys(source_url):
+                by_source_key.setdefault(key, note_path)
+
+    state_entries = load_state()
+
+    def _lookup(candidate: MeetingCandidate) -> Path | None:
+        for key in _source_url_match_keys(candidate.source_url):
+            path = by_source_key.get(key)
+            if path is not None:
+                return path
+        for entry in state_entries:
+            if entry.status != "processed" or not entry.output_path:
+                continue
+            if _state_entry_matches_candidate(entry, candidate):
+                return Path(entry.output_path)
+        return None
+
+    return _lookup
 
 
 def _state_entry_matches_candidate(entry: StateEntry, candidate: MeetingCandidate) -> bool:

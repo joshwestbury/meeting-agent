@@ -33,7 +33,7 @@ def _retrieval_result() -> RetrievalResult:
     )
 
 
-def test_acceptance_interactive_prompts_and_writes_note(tmp_path: Path, monkeypatch) -> None:
+def test_acceptance_process_day_prompts_and_writes_note(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     home = tmp_path / "home"
     home.mkdir()
@@ -56,7 +56,7 @@ def test_acceptance_interactive_prompts_and_writes_note(tmp_path: Path, monkeypa
 
     result = runner.invoke(
         app,
-        [],
+        ["process-day", "--date", "2026-03-01", "--no-llm"],
         input=(
             "1\n"
             "Inbox/Meetings/\n"

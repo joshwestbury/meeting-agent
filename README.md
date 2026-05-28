@@ -26,6 +26,7 @@ Meeting Agent is a **local-first workflow** that connects your [Granola](https:/
 | Setup | `meeting-agent init` — vault path, staging root, timezone, auth mode (`token`, `cookie`, `manual_export`, `desktop_session`). |
 | Auth | `meeting-agent auth-import` — import Granola desktop session material into the keychain; `meeting-agent auth-check <link>` — verify API access. |
 | Processing | `meeting-agent process <link>` — one link; `meeting-agent process-day [--date YYYY-MM-DD]` — discover and batch-select meetings for a day; `process --new` — consume staged/unprocessed transcripts. |
+| TUI | `meeting-agent tui [--date YYYY-MM-DD]` — open a keyboard-driven terminal browser for transcript-ready meetings. |
 | Convenience | `meeting-agent open --latest` — open the most recently written note from state (macOS `open`). |
 | Models | `meeting-agent models pull`, `doctor`, `list` — download and verify local GGUF models and server connectivity. |
 
@@ -77,6 +78,14 @@ Use a custom date:
 ```bash
 uv run ma --date 2026-03-06
 ```
+
+Open the terminal UI:
+
+```bash
+uv run meeting-agent tui
+```
+
+The TUI shows transcript-ready meetings for the selected day, keeps details in a side pane, and supports keyboard actions such as refresh, source URL display, and processing handoff.
 
 ## Output Modes
 

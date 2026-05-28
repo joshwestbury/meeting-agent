@@ -142,24 +142,23 @@ def test_process_day_no_candidates_exits_cleanly(tmp_path: Path, monkeypatch) ->
     assert "No transcript-ready meetings found for 2026-03-07." in result.output
 
 
-def test_default_ma_flow_accepts_global_date_flag(tmp_path: Path, monkeypatch) -> None:
+def test_default_ma_flow_opens_tui_with_global_date_flag(tmp_path: Path, monkeypatch) -> None:
+    import meeting_agent.tui
+
     runner = CliRunner()
     monkeypatch.setenv("MEETING_AGENT_TOKEN", "secret")
     monkeypatch.setattr("meeting_agent.cli.load_and_validate_startup_config", lambda: _config(tmp_path))
     captured_dates: list[date] = []
     monkeypatch.setattr(
-        "meeting_agent.cli.list_meetings_for_day",
-        lambda _config, target_date, timezone_name="local": (
-            captured_dates.append(target_date),
-            [],
-        )[1],
+        meeting_agent.tui,
+        "run_tui",
+        lambda _config, *, target_date, **_kwargs: captured_dates.append(target_date),
     )
 
     result = runner.invoke(app, ["--date", "2026-03-06"])
 
     assert result.exit_code == 0
     assert captured_dates == [date(2026, 3, 6)]
-    assert "No transcript-ready meetings found for 2026-03-06." in result.output
 
 
 def test_process_day_folder_prompt_falls_back_to_inbox(tmp_path: Path, monkeypatch) -> None:
