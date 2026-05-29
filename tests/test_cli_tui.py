@@ -555,5 +555,5 @@ def test_run_tui_uses_inline_terminal_mode(tmp_path: Path, monkeypatch) -> None:
     meeting_agent.tui.run_tui(_config(tmp_path), target_date=date(2026, 3, 7))
 
     assert captured_kwargs["inline"] is True
-    assert captured_kwargs["inline_no_clear"] is True
-    assert captured_kwargs["size"] == (96, 18)
+    assert captured_kwargs["inline_no_clear"] is False
+    assert captured_kwargs["size"] == (96, 15)

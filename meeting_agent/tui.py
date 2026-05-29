@@ -6,6 +6,7 @@ import textwrap
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual._compositor import CompositorUpdate
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from meeting_agent.config import AppConfig
@@ -17,19 +18,57 @@ from meeting_agent.retrieval import MeetingCandidate, list_meetings_for_day
 ProcessMeetingCallback = Callable[[MeetingCandidate, Callable[[str], None], str | None], None]
 ExistingNoteCallback = Callable[[MeetingCandidate], Path | None]
 IMPORT_ALL_ID = "import-all"
+PICKER_WIDTH = 86
+
+
+class CroppedInlineUpdate(CompositorUpdate):
+    def __init__(self, renderable: object, *, left: int, width: int) -> None:
+        self.strips = [strip.crop(left, left + width) for strip in renderable.strips]
+        self.clear = renderable.clear
+        self.left = left
+
+    def render_segments(self, console) -> str:
+        sequences: list[str] = []
+        append = sequences.append
+        for last, strip in self._loop_last(self.strips):
+            append("\r")
+            if self.left:
+                append(f"\x1b[{self.left}C")
+            append(strip.render(console))
+            if not last:
+                append("\n")
+        if self.clear:
+            if len(self.strips) > 1:
+                append("\n")
+            append("\x1b[J")
+        if len(self.strips) > 1:
+            back_lines = len(self.strips) if self.clear else len(self.strips) - 1
+            append(f"\x1b[{back_lines}A\r")
+        else:
+            append("\r")
+        append("\x1b[6n")
+        return "".join(sequences)
+
+    @staticmethod
+    def _loop_last(items):
+        count = len(items)
+        for index, item in enumerate(items):
+            yield index == count - 1, item
 
 
 class MeetingAgentTui(App[MeetingCandidate | None]):
+    INLINE_PADDING = 0
+
     CSS = """
     Screen {
         background: transparent;
-        color: #d5d9e2;
+        color: ansi_default;
         align: center middle;
     }
 
     #picker {
-        width: 96;
-        height: 18;
+        width: 86;
+        height: 15;
         min-width: 72;
         min-height: 15;
         padding: 0;
@@ -38,27 +77,26 @@ class MeetingAgentTui(App[MeetingCandidate | None]):
 
     #panes {
         height: 1fr;
-        margin-bottom: 1;
     }
 
     #results-pane {
         width: 56%;
         min-width: 36;
-        border: round #b7c0cc;
+        border: round ansi_default;
         background: transparent;
         margin-right: 1;
     }
 
     #preview-pane {
         width: 1fr;
-        border: round #b7c0cc;
+        border: round ansi_default;
         background: transparent;
     }
 
     .pane-title {
         height: 1;
         padding: 0 1;
-        color: #d5d9e2;
+        color: ansi_default;
         text-style: bold;
     }
 
@@ -69,23 +107,24 @@ class MeetingAgentTui(App[MeetingCandidate | None]):
 
     ListItem {
         padding: 0 1;
-        color: #d5d9e2;
+        color: ansi_default;
     }
 
     ListItem.--highlight {
-        background: #5b626d;
-        color: #f8fafc;
+        background: ansi_default;
+        color: ansi_default;
+        text-style: reverse;
     }
 
     #details {
         height: 1fr;
-        padding: 1 1;
+        padding: 0 1;
         background: transparent;
     }
 
     #output-row {
-        height: 4;
-        border: round #b7c0cc;
+        height: 3;
+        border: round ansi_default;
         background: transparent;
     }
 
@@ -94,14 +133,14 @@ class MeetingAgentTui(App[MeetingCandidate | None]):
         height: 1fr;
         padding: 0 1;
         background: transparent;
-        color: #aeb7c5;
+        color: ansi_default;
     }
 
     #folder-label {
         width: 11;
         display: none;
         content-align: right middle;
-        color: #d5d9e2;
+        color: ansi_default;
         text-style: bold;
     }
 
@@ -114,7 +153,7 @@ class MeetingAgentTui(App[MeetingCandidate | None]):
         display: none;
         background: transparent;
         border: none;
-        color: #d5d9e2;
+        color: ansi_default;
         padding: 0 1;
     }
 
@@ -125,8 +164,8 @@ class MeetingAgentTui(App[MeetingCandidate | None]):
     #status {
         height: 1;
         padding: 0 1;
-        background: transparent;
-        color: #8f98a8;
+        background: ansi_default;
+        color: ansi_default;
     }
     """
     BINDINGS = [
@@ -145,7 +184,7 @@ class MeetingAgentTui(App[MeetingCandidate | None]):
         process_meeting: ProcessMeetingCallback | None = None,
         existing_note_for_candidate: ExistingNoteCallback | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(ansi_color=True)
         self.config = app_config
         self.target_date = day
         self.process_meeting = process_meeting
@@ -160,6 +199,13 @@ class MeetingAgentTui(App[MeetingCandidate | None]):
         self.awaiting_folder_candidate: MeetingCandidate | None = None
         self.title = "Meeting Agent"
         self.sub_title = day.isoformat()
+
+    def _display(self, screen, renderable) -> None:
+        if self.is_inline and hasattr(renderable, "strips") and hasattr(renderable, "clear"):
+            width = min(PICKER_WIDTH, self.size.width)
+            left = max(0, (self.size.width - width) // 2)
+            renderable = CroppedInlineUpdate(renderable, left=left, width=width)
+        super()._display(screen, renderable)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker"):
@@ -529,6 +575,6 @@ def run_tui(
         existing_note_for_candidate=existing_note_for_candidate,
     ).run(
         inline=True,
-        inline_no_clear=True,
-        size=(96, 18),
+        inline_no_clear=False,
+        size=(96, 15),
     )
